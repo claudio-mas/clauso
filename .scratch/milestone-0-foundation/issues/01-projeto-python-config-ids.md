@@ -2,7 +2,7 @@
 
 **What to build:** um desenvolvedor clona o repositório, gera os segredos locais automaticamente e instala o pacote da API com um lockfile reproduzível. Os settings por ambiente (local, test, staging, production) são validados e falham de forma sanitizada, sem conectar a nenhum serviço. A estrutura de diretórios da seção 3 do plano é criada na raiz deste repositório (ao lado de `CONTEXT.md` e `docs/`), não numa subpasta.
 
-**Blocked by:** None (can start immediately)
+**Blocked by:** None
 
 **Status:** ready-for-agent
 
@@ -15,3 +15,4 @@
 - [ ] O gerador de dotenv só aceita `local` e `test`, troca somente os marcadores explícitos, não imprime segredos e recusa sobrescrever arquivo existente
 - [ ] O pacote instala e `import cce` funciona; `uv lock --check` e `uv sync --locked` passam; Ruff e mypy estrito passam
 - [ ] Nenhum módulo de negócio vazio é criado; diretórios futuros têm só README de escopo
+- [ ] O ADR `docs/adr/0011-python-uv.md` registra Python 3.12, a versão fixada do uv e o lockfile por app (formato e conteúdo da seção 16 do plano)

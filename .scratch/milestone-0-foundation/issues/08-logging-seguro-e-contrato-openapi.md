@@ -15,3 +15,4 @@
 - [ ] Logs não contêm corpo, query string, nome, e-mail nem documento
 - [ ] O OpenAPI lista os paths exatos, o esquema Bearer, os scopes exigidos por operação, os códigos de erro e nenhum campo de segredo
 - [ ] Os documentos de autenticação e de erros têm exemplos completos
+- [ ] O ADR `docs/adr/0016-observability.md` registra logs redigidos por allowlist, `request_id`/`trace_id` e a evolução para tracing distribuído

@@ -19,3 +19,4 @@
 - [ ] A CLI revoga chaves, rejeita revogação de chave de outro Tenant e suspende ou ativa Tenants
 - [ ] Nenhum cache positivo de chaves existe; a revogação vale na autenticação seguinte
 - [ ] `check_schema` passa a verificar função, owner, `search_path` e `EXECUTE`
+- [ ] O ADR `docs/adr/0012-api-key-bootstrap.md` registra HMAC com pepper versionado, a função de lookup, a CLI e a rotação
