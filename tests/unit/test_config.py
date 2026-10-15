@@ -48,7 +48,9 @@ def local_env(**overrides: str | None) -> dict[str, str]:
     return apply_overrides(env, overrides)
 
 
-def remote_env(tmp_path: Path, environment: str = "staging", **overrides: str | None) -> dict[str, str]:
+def remote_env(
+    tmp_path: Path, environment: str = "staging", **overrides: str | None
+) -> dict[str, str]:
     ca_file = tmp_path / "ca.pem"
     ca_file.write_text("not a real certificate, only has to be readable")
     env = {
@@ -90,7 +92,7 @@ def assert_refused(loader: Loader, *names: str) -> str:
         assert secret not in repr(excinfo.value)
     # A causa original (ValidationError) carrega o valor recebido; ela não pode viajar junto.
     assert excinfo.value.__cause__ is None
-    assert excinfo.value.__suppress_context__ is True
+    assert excinfo.value.__context__ is None or excinfo.value.__suppress_context__
     return message
 
 
@@ -259,9 +261,7 @@ def test_migrator_dsn_with_wrong_role_is_refused(
         f"postgresql+asyncpg://cce_app:{APP_PASSWORD}@127.0.0.1:notaport/cce",
     ],
 )
-def test_runtime_dsn_with_wrong_shape_is_refused(
-    monkeypatch: pytest.MonkeyPatch, dsn: str
-) -> None:
+def test_runtime_dsn_with_wrong_shape_is_refused(monkeypatch: pytest.MonkeyPatch, dsn: str) -> None:
     set_env(monkeypatch, local_env(CCE_DATABASE_URL=dsn))
 
     assert_refused(load_settings, "CCE_DATABASE_URL")
@@ -596,9 +596,7 @@ def test_boundary_values_are_accepted(
     assert getattr(settings, name.removeprefix("CCE_").lower()) == expected
 
 
-def test_console_log_format_is_local_only(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_console_log_format_is_local_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     set_env(monkeypatch, local_env(CCE_LOG_FORMAT="console"))
     assert load_settings().log_format == "console"
 

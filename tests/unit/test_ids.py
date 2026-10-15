@@ -27,7 +27,9 @@ KINDS = [
 
 @pytest.mark.parametrize(("prefix", "encode", "decode"), KINDS)
 @pytest.mark.parametrize("value", SAMPLES)
-def test_roundtrip_preserves_uuid(prefix: str, encode: Encoder, decode: Decoder, value: UUID) -> None:
+def test_roundtrip_preserves_uuid(
+    prefix: str, encode: Encoder, decode: Decoder, value: UUID
+) -> None:
     public_id = encode(value)
 
     assert public_id == prefix + value.hex
