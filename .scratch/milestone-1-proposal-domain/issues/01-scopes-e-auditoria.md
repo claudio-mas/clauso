@@ -2,7 +2,7 @@
 
 **What to build:** um operador consegue emitir, pela CLI administrativa, chaves com os scopes `customer:read`, `customer:write`, `proposal:read` e `proposal:write`, e o CCE passa a ter um serviço de auditoria que grava um AuditEvent (ator, ação, entidade, valores antigo e novo, instante, IP truncado e `request_id`) na mesma transação do dado alterado. Chaves já emitidas não ganham os novos scopes sozinhas. Este ticket é o prefactor: os demais tickets de escrita dependem dele.
 
-**Blocked by:** None (can start immediately)
+**Blocked by:** Milestone 0, ticket 11 (ADRs, documentação e gate do M0), em `.scratch/milestone-0-foundation/issues/`
 
 **Status:** ready-for-agent
 
