@@ -4,7 +4,7 @@
 
 **Blocked by:** None
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Plano:** Technical Implementation Plan do M0, Tarefa 1 e seções 3, 4 e 5. **Vocabulário:** Tenant (`CONTEXT.md`).
 
