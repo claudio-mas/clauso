@@ -1,0 +1,24 @@
+# Segredos e ambientes locais (somente .env.example é versionado)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+apps/api/.venv/
+.venv/
+
+# Caches de ferramentas
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Cobertura e artefatos de build
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/

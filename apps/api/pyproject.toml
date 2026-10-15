@@ -1,0 +1,63 @@
+[project]
+name = "cce-api"
+version = "0.1.0"
+description = "Commercial Closing Engine API"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "fastapi>=0.121,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "pydantic>=2.11,<3",
+  "pydantic-settings>=2.8,<3",
+  "sqlalchemy[asyncio]>=2.0.40,<2.1",
+  "alembic>=1.15,<2",
+  "asyncpg>=0.30,<1",
+  "redis>=6,<8",
+  "structlog>=25,<27",
+  "typer>=0.15,<1",
+  "tzdata>=2025.2",
+]
+
+[project.scripts]
+cce-admin = "cce.admin.cli:app"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<10",
+  "pytest-asyncio>=1,<2",
+  "pytest-cov>=6,<8",
+  "httpx>=0.28,<1",
+  "asgi-lifespan>=2.1,<3",
+  "ruff>=0.11,<1",
+  "mypy>=1.15,<2",
+  "pip-audit>=2.9,<3",
+]
+
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cce"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["cce"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.coverage.run]
+branch = true
+source = ["cce"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
