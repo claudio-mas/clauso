@@ -12,5 +12,5 @@
 - [ ] Criar Contact para Customer de outro Tenant ou inexistente retorna 404
 - [ ] A chave estrangeira composta por Tenant impede, no banco, ligar um Contact a Customer de outro Tenant (teste direto no banco)
 - [ ] Listagem com paginação por cursor, no mesmo contrato do ticket 02
-- [ ] Os scopes de customer se aplicam; criar e alterar gravam AuditEvent; logs não contêm dados pessoais
+- [ ] Os scopes de customer se aplicam; criar e alterar gravam AuditEvent sem valores de campos pessoais; logs não contêm dados pessoais
 - [ ] RLS forçada e testes de banco como `cce_app`; migration sobe e desce

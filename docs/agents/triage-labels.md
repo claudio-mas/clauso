@@ -12,4 +12,15 @@ The skills speak in terms of five canonical triage roles. This file maps those r
 
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
 
-Edit the right-hand column to match whatever vocabulary you actually use.
+## Execution statuses
+
+Once a ticket leaves triage, the `**Status:**` line follows the cycle in `workflow.md`. These values are valid too:
+
+| Status        | Meaning                                                         |
+| ------------- | --------------------------------------------------------------- |
+| `in-progress` | A Programador is implementing it on its own branch              |
+| `in-review`   | The Pull Request is open and waiting for the Revisor and the CI |
+| `done`        | The Pull Request was merged into `main`                         |
+| `blocked`     | Waiting on a human decision, recorded under `## Comments`       |
+
+Edit the right-hand column of the first table to match whatever vocabulary you actually use.

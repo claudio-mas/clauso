@@ -8,6 +8,24 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 - The spec is `.scratch/<feature-slug>/spec.md`
 - Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
 - Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
+
+### Exact header format
+
+Every ticket starts with its title and then these lines, each in its own paragraph and in this exact form, so that agents and scripts can parse them:
+
+```markdown
+# NN: Título
+
+**What to build:** ...
+
+**Blocked by:** None
+
+**Status:** ready-for-agent
+```
+
+- `**Blocked by:**` is `None` or a comma-separated list of ticket references. A reference in the same feature is the number (`04`); a reference to another feature is `<prefix>/<NN>`, where the prefix is the branch prefix from `workflow.md` (`m0/11`). A pending human decision is written after a semicolon, in prose (`10; decisão humana sobre hospedagem`), and the ticket stays `blocked` until it is recorded under `## Comments`.
+- `**Status:**` takes one value from `triage-labels.md` or from the status cycle in `workflow.md`.
+- A spec uses the same bold form, with `**Type:** spec` before `**Status:**`.
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
 
 ## When a skill says "publish to the issue tracker"

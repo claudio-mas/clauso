@@ -17,3 +17,4 @@
 - [ ] Com `pool_size=1` e `max_overflow=0`: A, depois sem contexto (zero), depois B (só B), repetido após erro e após cancelamento
 - [ ] `tenant_session` abre a transação, aplica o contexto local antes de qualquer acesso, faz flush e commit, e faz rollback em exceção ou cancelamento; repositories nunca fazem commit
 - [ ] `check_schema` falha se faltar FORCE RLS, policy ou grant esperado, ou se `cce_app` ganhar ownership, `BYPASSRLS` ou membership
+- [ ] O ADR `docs/adr/0013-transaction-tenant-context.md` registra o contexto local por transação, a sessão por operação e o commit antes da resposta HTTP

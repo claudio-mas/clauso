@@ -41,7 +41,7 @@ O agregado comercial de um Tenant para um Customer, que reúne todas as suas ver
 _Avoid_: Quote
 
 **ProposalVersion** ("versão da proposta"):
-O conteúdo comercial completo da Proposal em um dado momento, incluindo sua Offer validity. Uma vez aceita, a versão nunca mais muda. Antes de publicada é um *draft*; uma versão gerada por IA sempre nasce como draft e só é publicada por ação explícita de um User. *Ready* significa revisada por um humano, não gerada.
+O conteúdo comercial completo da Proposal em um dado momento, incluindo sua Offer validity. Uma vez aceita, a versão nunca mais muda. Uma versão gerada pela IA do CCE nasce *draft* e só pode ser publicada depois de marcada como *ready* (revisada) por um ator autorizado; conteúdo enviado pelo Host pode ser publicado diretamente. *Draft* e *ready* são atributos da versão, não estados da Proposal (ADR-0023).
 _Avoid_: Revision
 
 **Offer validity** ("validade da oferta"):
@@ -63,7 +63,7 @@ _Avoid_: Amount, price
 ### Fechamento
 
 **Publication** ("publicação"):
-A exposição de uma única ProposalVersion a um Recipient por um link próprio. Uma nova versão exige uma nova Publication; o link antigo avisa que foi substituído. Tem expiração própria, independente da Offer validity: com a oferta vencida o link continua abrindo, mas sem aceite.
+A exposição de uma única ProposalVersion a um Recipient por um link próprio. Uma nova versão exige uma nova Publication; o link antigo avisa que foi substituído. Tem expiração própria, independente da Offer validity: com a oferta vencida o link continua abrindo, mas sem aceite. Publicar exige ação explícita de um User ou de uma API key com o scope `proposal:publish` (ADR-0023).
 _Avoid_: Link, share
 
 **Acceptance** ("aceite"):

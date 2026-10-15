@@ -1,7 +1,8 @@
-Status: ready-for-agent
-Type: spec
-
 # Milestone 1 — Proposal Domain
+
+**Type:** spec
+
+**Status:** ready-for-agent
 
 ## Problem Statement
 
@@ -42,8 +43,8 @@ Tudo é isolado por Tenant via RLS, auditado e coberto por testes de isolamento.
 18. Como Host, quero que um Customer inline seja obtido ou criado por `external_source` + `external_id`, sem sobrescrever dados de um Customer já existente, para que um envio de proposta não altere o cadastro por acidente.
 19. Como Host, quero que a Proposal nasça com a ProposalVersion de número 1, para ter sempre uma versão corrente consultável.
 20. Como Host, quero que reenviar o mesmo Quote com conteúdo alterado crie uma nova ProposalVersion da mesma Proposal, para manter o histórico em vez de duplicar a proposta.
-21. Como Host, quero que reenviar o mesmo Quote com conteúdo idêntico devolva a Proposal existente sem criar versão, para poder repetir a requisição com segurança depois de timeout.
-22. Como Host, quero distinguir pelo status HTTP (201 criada, 200 existente ou versão nova) o que aconteceu no envio, para tratar cada caso.
+21. Como Host, quero que reenviar o mesmo Quote com conteúdo idêntico devolva a Proposal existente sem criar versão, mesmo que eu recalcule a validade da oferta a cada envio, para poder repetir a requisição com segurança depois de timeout.
+22. Como Host, quero distinguir pelo status HTTP (201 criada, 200 nos demais casos) e por um campo `result` no corpo (`created`, `unchanged`, `updated`, `version_created`) o que aconteceu no envio, para tratar cada caso.
 23. Como Host, quero receber erro claro quando reenvio um Quote apontando para outro Customer, para não mover uma proposta entre clientes sem perceber.
 24. Como Host, quero que a moeda da Proposal seja definida na criação e não mude depois, para que todas as versões sejam comparáveis.
 25. Como Host, quero informar `valid_until` (validade da oferta) por versão, para que cada versão possa mudar o prazo.
@@ -86,7 +87,7 @@ Tudo é isolado por Tenant via RLS, auditado e coberto por testes de isolamento.
 53. Como operador, quero emitir chaves com os novos scopes pela CLI administrativa, para dar acesso sem tocar no banco.
 54. Como operador, quero que chaves já emitidas só ganhem os novos scopes por reemissão, para que nenhuma chave existente amplie acesso sozinha.
 55. Como Host, quero erros no formato padrão com `code` estável (incluindo `TOTAL_MISMATCH` e `PRECONDITION_FAILED`), para tratá-los em código sem ler mensagens.
-56. Como auditor do Tenant, quero um registro de auditoria de cada criação e alteração de Customer, Contact, Proposal e ProposalVersion, com ator, ação, valores antigo e novo, IP truncado e `request_id`, para reconstruir quem mudou o quê.
+56. Como auditor do Tenant, quero um registro de auditoria de cada criação e alteração de Customer, Contact, Proposal e ProposalVersion, com ator, ação, campos alterados, valores antigo e novo (exceto de campos pessoais, dos quais só o nome é registrado), IP truncado e `request_id`, para reconstruir quem mudou o quê sem eternizar dados pessoais.
 57. Como auditor, quero que o registro de auditoria seja somente de acréscimo, inclusive para o próprio runtime, para que o histórico não seja reescrito.
 58. Como operador, quero que logs não contenham nome, e-mail, documento nem conteúdo de propostas, para não vazar dados pessoais por observabilidade.
 59. Como desenvolvedor do CCE, quero que uma ProposalVersion marcada como publicada ou aceita seja rejeitada para UPDATE e DELETE pelo próprio banco, para que o M2 e o M5 herdem a imutabilidade (ADR-005) sem depender de disciplina de código.
@@ -114,14 +115,15 @@ Tudo é isolado por Tenant via RLS, auditado e coberto por testes de isolamento.
 
 - Novas tabelas: customers, contacts, proposals, proposal_versions e audit_events, todas no schema `cce`, com `tenant_id` obrigatório, ENABLE e FORCE ROW LEVEL SECURITY e policies de isolamento no mesmo padrão do M0.
 - Cada tabela de domínio tem unicidade composta `(tenant_id, id)`, e as chaves estrangeiras entre tabelas de domínio são compostas `(tenant_id, referência)`, de modo que ligar dados de Tenants diferentes é impossível no nível do banco.
-- Unicidade por Tenant de `(external_source, external_id)` em customers e em proposals, quando `external_id` existe.
+- Unicidade por Tenant de `(external_source, external_id)` em customers e em proposals, quando `external_id` existe. `external_source` é obrigatório sempre que `external_id` for informado (CHECK no banco e 422 na API), porque o PostgreSQL trata NULLs como distintos e uma unicidade com `external_source` nulo deixaria passar duplicatas. A unicidade é um índice único parcial `(tenant_id, external_source, external_id) WHERE external_id IS NOT NULL`. Em proposals os dois campos são obrigatórios (ADR-0020).
 - IDs públicos novos: `cus_`, `ctc_`, `prop_`, `ver_` e `aud_`; UUID4 internamente, como no M0.
-- **Proposal**: `external_source`, `external_id`, `customer_id`, `status`, `title`, `currency`, `current_version_id`, `metadata`, `created_by`, `created_at`, `updated_at`. No M1 `status` é sempre `DRAFT`; READY e PUBLISHED chegam com a publicação (M2). `customer_id` e `currency` são imutáveis. A validade da oferta não pertence à Proposal.
+- **Proposal**: `external_source`, `external_id`, `customer_id`, `status`, `title`, `currency`, `current_version_id`, `metadata`, `created_by`, `created_at`, `updated_at`. No M1 `status` é sempre `DRAFT`; `PUBLISHED` e os demais estados chegam com a publicação (M2). `READY` não é estado da Proposal: a revisão é atributo da ProposalVersion (ADR-0023). `customer_id` e `currency` são imutáveis. A validade da oferta não pertence à Proposal.
 - **ProposalVersion**: `version_number` (sequencial por Proposal a partir de 1, sem lacunas), `content` (Sections), `pricing_snapshot`, `terms_snapshot`, `valid_until` (anulável, no futuro quando informada), `checksum`, `published_at` e `accepted_at` (anuláveis, só usados a partir do M2 e do M5), `created_at`, `created_by`. `current_version_id` da Proposal aponta sempre para a de maior número.
 - O `pricing_snapshot` é JSONB que embute os itens e seus totais calculados, porque a versão é um retrato imutável; não há tabela relacional de itens no M1.
-- `checksum` é SHA-256 sobre a forma canônica (chaves ordenadas, sem espaços, números em forma fixa) de conteúdo, preços, termos e `valid_until`.
-- **AuditEvent**: ator, ação, entidade, ID da entidade, valores antigo e novo, instante, IP truncado (IPv4 /24, IPv6 /48) e `request_id`. O runtime só tem INSERT e SELECT; nunca UPDATE, DELETE ou TRUNCATE.
-- Trava no banco: um gatilho rejeita UPDATE e DELETE de qualquer linha de proposal_versions cujo `published_at` ou `accepted_at` não seja nulo. No M1 nenhuma versão chega a esse estado pela API; o gatilho existe para que o M2 e o M5 já nasçam protegidos.
+- `checksum` é SHA-256 sobre a forma canônica (chaves ordenadas, sem espaços, números em forma fixa) de conteúdo, preços, termos e `valid_until`. É o ETag da versão e o hash que a evidência citará. A comparação de reenvio (ver "Criação, reenvio e versões") usa a mesma forma canônica **sem** `valid_until`.
+- **AuditEvent**: ator, ação, entidade, ID da entidade, campos alterados, valores antigo e novo, instante, IP truncado (IPv4 /24, IPv6 /48) e `request_id`. O runtime só tem INSERT e SELECT; nunca UPDATE, DELETE ou TRUNCATE.
+- Como o AuditEvent é append-only, ele **não guarda dados pessoais** (ADR-0022): para campos pessoais de Customer e Contact (`name`, `document`, `email`, `phone`) e para `metadata`, registra só o nome do campo em `changed_fields`, sem valor antigo nem novo. Valores comerciais (preços, Total, Sections, título, moeda, validade) são guardados normalmente. Assim um pedido de anonimização de Customer nunca exige reescrever a auditoria.
+- Trava no banco (ADR-0024): um gatilho em proposal_versions deixa livre a versão em que `published_at` e `accepted_at` são nulos. Depois que qualquer um deles é preenchido, rejeita DELETE e só aceita o UPDATE que preenche `published_at` ou `accepted_at` que ainda estejam nulos, sem alterar nenhuma outra coluna; os dois campos nunca voltam a nulo nem mudam de valor. Assim o M2 consegue publicar e o M5 consegue registrar o aceite numa versão publicada, mas nada mais muda. No M1 nenhuma versão chega a esse estado pela API; o gatilho existe para que o M2 e o M5 já nasçam protegidos.
 - `created_by` registra o ator como o ID da API key, porque usuários humanos só existem depois da sessão embedded; passa a referenciar `User` quando ele existir.
 
 ### Preço e Total (ADR-0019)
@@ -141,9 +143,13 @@ Tudo é isolado por Tenant via RLS, auditado e coberto por testes de isolamento.
 
 ### Criação, reenvio e versões (ADR-0020)
 
-- `POST /api/v1/proposals` com um `external_source` + `external_id` ainda inexistentes cria a Proposal e a versão 1 (201). Com o par já existente, compara o checksum do conteúdo enviado com o da versão corrente: igual devolve a Proposal sem alteração (200); diferente cria uma nova ProposalVersion (200). Cliente diferente do original retorna 422 `CUSTOMER_MISMATCH`.
+- `POST /api/v1/proposals` com um `external_source` + `external_id` ainda inexistentes cria a Proposal e a versão 1 (201, `result: created`). Com o par já existente, compara a forma canônica de conteúdo, preços e termos enviados com a da versão corrente, **sem** `valid_until`, porque é comum o Host recalcular a validade a cada envio ("hoje + 30 dias"):
+  - diferente: cria uma nova ProposalVersion, que passa a ser a corrente (200, `result: version_created`);
+  - igual, e `valid_until`, `title` e `metadata` também iguais: devolve a Proposal sem alteração (200, `result: unchanged`);
+  - igual, mas `valid_until`, `title` ou `metadata` diferentes: atualiza esses campos no lugar, sem criar versão, enquanto a versão corrente está em draft, e grava AuditEvent (200, `result: updated`). A partir do M2, uma versão já publicada não muda no lugar: o M2 decide se esse caso cria versão ou é ignorado.
+- Cliente diferente do original retorna 422 `CUSTOMER_MISMATCH`; moeda diferente retorna 422 `CURRENCY_MISMATCH`. Nos dois casos nada é gravado.
 - A regra "após o Acceptance o reenvio é rejeitado" pertence ao M5; o M1 não tem Acceptance e deixa o ponto de extensão documentado, sem código de erro implementado.
-- O cliente pode vir como `customer_id` ou como objeto inline; o inline faz obter-ou-criar por `external_source` + `external_id` e nunca altera um Customer existente (atualizações usam `PATCH /customers/{id}`).
+- O cliente pode vir como `customer_id` ou como objeto inline; o inline faz obter-ou-criar por `external_source` + `external_id` e nunca altera um Customer existente (atualizações usam `PATCH /customers/{id}`). Enviar o objeto inline exige `customer:write` sempre, exista ou não o Customer, para que a resposta não revele a existência do cadastro nem varie conforme o estado do banco.
 - Em draft a ProposalVersion é editável por `PUT` até a primeira Publication (M2). `POST /proposals/{id}/versions` cria deliberadamente outra versão; a edição não cria versão. A numeração é alocada sob bloqueio da linha da Proposal, para que a concorrência nunca produza números repetidos ou lacunas.
 - `PUT` aceita `If-Match` com o checksum; divergência retorna 412 `PRECONDITION_FAILED`. A ausência do cabeçalho não bloqueia. O ETag devolvido é o checksum.
 - `PATCH /proposals/{id}` altera só `title` e `metadata`, sem nova versão, e é auditado.
@@ -153,21 +159,21 @@ Tudo é isolado por Tenant via RLS, auditado e coberto por testes de isolamento.
 - Recursos: customers, contacts de um customer, proposals e versions de uma proposal, todos sob `/api/v1`, nos moldes do Blueprint (§34) e do plano do M0.
 - Listagens usam cursor opaco, `limit` padrão 50 e máximo 200, ordenadas por `created_at` decrescente com desempate por ID.
 - Novos scopes: `customer:read`, `customer:write`, `proposal:read`, `proposal:write`. A restrição de scopes no banco e a lista da aplicação são estendidas por migration; a CLI aceita emitir chaves com eles. Chaves existentes não mudam.
-- Novo código de erro HTTP 412 `PRECONDITION_FAILED` e erros de domínio 422 `TOTAL_MISMATCH` e `CUSTOMER_MISMATCH`, somados à tabela do M0. Violações de unicidade retornam 409 `CONFLICT` com o ID existente em `details`.
+- Novo código de erro HTTP 412 `PRECONDITION_FAILED` e erros de domínio 422 `TOTAL_MISMATCH`, `CUSTOMER_MISMATCH` e `CURRENCY_MISMATCH`, somados à tabela do M0. Violações de unicidade retornam 409 `CONFLICT` com o ID existente em `details`.
 - Contrato OpenAPI documenta os scopes exigidos por operação (extensão já usada no M0) e não expõe campos internos.
 - Referência a recurso de outro Tenant resulta em 404, nunca 403, e as respostas de erro não revelam existência.
 
 ### Observabilidade e dados pessoais
 
 - Logs seguem a regra do M0: sem nome, e-mail, documento, conteúdo de propostas nem corpo de requisição; apenas IDs, rota (template) e códigos.
-- A auditoria guarda valores antigos e novos, o que inclui dados pessoais do Customer; sua retenção e anonimização seguem a política do Tenant e não são implementadas no M1.
+- A auditoria não guarda valores de campos pessoais, só o nome do campo alterado; por isso a anonimização futura de Customers e Contacts não depende de reescrever audit_events. A retenção da auditoria segue a política do Tenant e não é implementada no M1.
 
 ## Testing Decisions
 
 - Um bom teste exercita comportamento externo, nunca estrutura interna: faz uma requisição (ou abre uma conexão como o role runtime) e afirma sobre a resposta, o estado visível por outra requisição ou o erro do banco. Não afirma nomes de funções, ordem de chamadas nem formato de tabela além do contrato.
 - **Seam principal (API HTTP)**: cliente httpx com `LifespanManager` contra PostgreSQL 17 real, com Tenants A e B e chaves de cada um, nos moldes de `test_tenant_api.py` do plano do M0. Cobre todas as user stories de comportamento: ciclo de Customers e Contacts, criação e reenvio de Proposal (criada, idêntica, alterada, cliente divergente), versões e edição em draft, `If-Match`, cálculo do Total e `TOTAL_MISMATCH` com casos de arredondamento e limites, validação de Sections e limites, paginação e filtros, scopes (401/403/404 uniformes), formato de erro e logs sem dados pessoais.
 - **Isolamento via API**: para cada recurso novo, A não lê, não altera e não referencia dado de B; `X-Tenant-ID` falso não muda o resultado (mesma ideia do `test_header_cannot_switch_tenant`).
-- **Seam secundário (banco, RLS, grants e migrations)**, no padrão de `test_rls.py`, `test_db_roles.py`, `check_schema.py` e `test_migration_chain.py`: para cada tabela nova, ausência de contexto retorna zero linhas, A não vê B, `WITH CHECK` rejeita escrita para B, FORCE RLS vale para o owner; chave estrangeira composta recusa referência cruzada entre Tenants; o runtime não consegue UPDATE, DELETE ou TRUNCATE em audit_events; o gatilho rejeita UPDATE e DELETE de ProposalVersion com `published_at` ou `accepted_at` preenchido (o teste preenche o campo como migrator, em banco descartável); a cadeia de migrations sobe e desce em banco descartável; `check_schema.py` falha se faltar FORCE RLS, policy ou grant esperado nas tabelas novas.
+- **Seam secundário (banco, RLS, grants e migrations)**, no padrão de `test_rls.py`, `test_db_roles.py`, `check_schema.py` e `test_migration_chain.py`: para cada tabela nova, ausência de contexto retorna zero linhas, A não vê B, `WITH CHECK` rejeita escrita para B, FORCE RLS vale para o owner; chave estrangeira composta recusa referência cruzada entre Tenants; o runtime não consegue UPDATE, DELETE ou TRUNCATE em audit_events; o gatilho rejeita DELETE e qualquer UPDATE de ProposalVersion com `published_at` ou `accepted_at` preenchido, exceto preencher o outro campo ainda nulo (o teste preenche `published_at` como migrator, em banco descartável, confirma que preencher `accepted_at` funciona e que mudar conteúdo, Total ou os próprios carimbos falha); a cadeia de migrations sobe e desce em banco descartável; `check_schema.py` falha se faltar FORCE RLS, policy ou grant esperado nas tabelas novas.
 - O módulo Pricing é verificado pela API, com uma tabela de casos (quantidade fracionária, arredondamento no meio, desconto igual ao bruto, tributo, lista vazia). Se as combinações crescerem a ponto de a API ficar lenta ou ilegível, a decisão de adicionar um seam de domínio puro volta para revisão.
 - Os casos de segurança (isolamento, trava de versão, auditoria somente de acréscimo, scopes) são obrigatórios independentemente do percentual de cobertura; a meta global de 85% do M0 continua valendo.
 - Dados de teste são sintéticos; documentos usados nos testes têm dígitos verificadores válidos gerados por helper.
@@ -175,7 +181,7 @@ Tudo é isolado por Tenant via RLS, auditado e coberto por testes de isolamento.
 
 ## Out of Scope
 
-- Publication, link público, templates, Brand, renderer e PDF (M2). Os estados `READY` e `PUBLISHED` da Proposal e o estado `ACTIVE` da Publication também ficam para o M2.
+- Publication, link público, templates, Brand, renderer e PDF (M2). Os estados `PUBLISHED` em diante da Proposal, o estado `ACTIVE` da Publication e o scope `proposal:publish` (ADR-0023) também ficam para o M2.
 - Integração de referência com o Mini ERP (M3), Engagement, ViewSession e webhooks (M4), Acceptance, Evidence Package, Contract e Payment (M5), IA (M6), SDKs, Embedded UI e Web Components.
 - Entidade `User`, RBAC humano e provisionamento sob demanda; o ator é a API key.
 - Outbox e eventos de domínio (`proposal.created` etc.): entram junto com os webhooks no M4; a rastreabilidade do M1 vem do AuditEvent.
@@ -196,6 +202,7 @@ Premissas assumidas nesta spec que podem ser revistas antes da implementação:
 - **IP truncado na auditoria** segue a configuração de privacidade do Blueprint (§49); a política final de retenção é decisão do Tenant.
 - **Limites de tamanho** são valores iniciais de configuração, sem justificativa de carga real.
 - **Eventos adiados**: o Definition of Done do Blueprint (§76) inclui "events"; o M1 o cumpre por auditoria e deixa os eventos para o M4, quando o outbox existir. Se for preferível ter os eventos de domínio desde já, o outbox precisa antecipar.
-- **Trava no banco** (gatilho em ProposalVersion) é uma decisão de arquitetura não registrada em ADR; vale um ADR quando o M2 a acionar.
+- **Trava no banco** (gatilho em ProposalVersion) está registrada no ADR-0024.
+- **Reenvio sem `valid_until`**: a comparação ignora a validade para que reenvios com a validade recalculada não criem versões. Se um Host precisar registrar uma mudança de prazo como revisão comercial, usa `POST /proposals/{id}/versions`.
 
 Referências: `CONTEXT.md`, ADRs 0018 a 0022, Product & Technical Blueprint v1.1 (§12 a §14, §21, §33 a §36, §47, §49, §69 a §76 e §84) e o plano do Milestone 0 (seções 10, 11, 12 e 14).

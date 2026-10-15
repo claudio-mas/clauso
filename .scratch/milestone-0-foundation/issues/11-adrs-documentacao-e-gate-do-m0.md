@@ -8,13 +8,13 @@
 
 **Plano:** Tarefa 11 e seções 16, 19 e 20.
 
-- [ ] Os ADRs 001 a 010 preservam as decisões e os IDs do Blueprint, e os ADRs 011 a 017 seguem a tabela da seção 16 do plano
-- [ ] Os arquivos de ADR usam a numeração de quatro dígitos já adotada em `docs/adr/` (`0001` a `0017`), de modo a coexistirem com os ADRs `0018` a `0022` existentes, sem colisão de IDs
+- [ ] Os ADRs `0001` a `0010` (já escritos a partir do Blueprint) foram conferidos contra o que o M0 implementou, e os ADRs `0011` a `0017`, escritos nos tickets 01, 05, 06, 07, 08 e 10, existem e descrevem o estado real
+- [ ] `docs/adr/README.md` lista todos os ADRs, de `0001` em diante, com a numeração de quatro dígitos
 - [ ] O contexto de arquitetura, a visão da Foundation e o modelo de segurança descrevem o estado real implementado
 - [ ] O README tem quickstart, comandos, limites e o roadmap original; os diretórios futuros têm README de escopo
-- [ ] Os seis runbooks foram revisados e nenhum exemplo expõe segredo
+- [ ] Os runbooks do M0 (local-development, tenant-bootstrap, migrations, secrets-rotation e branch-protection) foram revisados e nenhum exemplo expõe segredo; deployment e backup-restore pertencem ao ticket 12
 - [ ] Cada requisito da matriz de rastreabilidade (seção 19) aponta para uma evidência
 - [ ] O quickstart roda numa cópia limpa, sem venv nem volume anterior, e o smoke com dois Tenants passa
 - [ ] O pipeline roda uma vez sem alterações pendentes que invalidem o resultado
-- [ ] Todos os itens da Definition of Done (seção 20) estão atendidos; só então o status do M0 é atualizado
+- [ ] Todos os itens da Definition of Done (seção 20) estão atendidos, exceto os de publicação, deploy e restore, que foram movidos para o ticket 12; só então o status do M0 é atualizado
 - [ ] Nada do Proposal Core, IA, pagamentos, frontend ou Golden Path é declarado entregue pelo M0

@@ -18,3 +18,4 @@
 - [ ] `/health/live` não checa dependências; `/health/ready` verifica PostgreSQL, Redis e schema, com 503 quando algo falha e sem expor URLs, hosts ou mensagens brutas
 - [ ] O Swagger fica desabilitado em staging e production, e o CORS só aceita origins explícitas
 - [ ] A imagem constrói, a API sobe pelo Compose e o smoke com dois Tenants passa em ambiente de teste
+- [ ] Os ADRs `docs/adr/0014-public-ids-api-errors.md` (UUID4 interno, prefixos públicos, códigos de erro estáveis) e `docs/adr/0015-redis-role.md` (Redis auxiliar, sem fonte de verdade nem broker fictício) estão escritos

@@ -14,6 +14,6 @@
 - [ ] `GET` devolve o checksum como `ETag`; `PUT` com `If-Match` divergente retorna 412 `PRECONDITION_FAILED` e nada é gravado; sem o cabeçalho a edição prossegue
 - [ ] `TOTAL_MISMATCH` e as validações de Sections e itens valem em `POST` e `PUT`
 - [ ] Duas criações concorrentes de versão nunca produzem número repetido nem lacuna
-- [ ] Editar ou criar versão grava AuditEvent com valores antigo e novo
+- [ ] Editar ou criar versão grava AuditEvent com campos alterados e valores antigo e novo dos campos comerciais
 - [ ] Versão com `published_at` ou `accepted_at` preenchido não pode ser editada (o gatilho do banco responde e a API devolve erro padronizado)
 - [ ] Versão de outra Proposal ou de outro Tenant é 404

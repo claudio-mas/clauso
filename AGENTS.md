@@ -14,6 +14,7 @@ Commercial Closing Engine (CCE): infraestrutura multi-tenant, API-first, para qu
 - Tracker: arquivos locais em `.scratch/<feature>/`. A spec é `spec.md` e cada ticket é `issues/NN-slug.md`. Detalhes em `docs/agents/issue-tracker.md`.
 - Milestone 0 (Foundation): `.scratch/milestone-0-foundation/issues/`. Plano de referência: `Technical_Implementation_Plan_Milestone_0_Foundation.md`.
 - Milestone 1 (Proposal Domain): `.scratch/milestone-1-proposal-domain/`. Só começa depois do ticket 11 do M0.
+- Quando um ticket diverge do plano ou da spec que ele cita, o ticket prevalece: ele é mais recente e já incorpora as revisões.
 - Visão de produto e arquitetura: `Product_Technical_Blueprint_v1.md`.
 
 ## Regras que valem para todos
@@ -23,5 +24,6 @@ Commercial Closing Engine (CCE): infraestrutura multi-tenant, API-first, para qu
 - Nunca diga que algo está pronto sem evidência: cite o comando executado e o resultado.
 - Segredos, DSNs, chaves e dados pessoais não aparecem em código, logs, commits nem tickets.
 - Não edite `CONTEXT.md`, ADRs nem arquivos de ticket, a menos que seu papel (ver `docs/agents/workflow.md`) permita.
-- Nada vai para a `main` sem revisão aprovada. O push para o remoto é do humano.
+- Nada vai para a `main` sem Pull Request, revisão aprovada e, a partir do ticket 10 do M0, CI verde. Ninguém faz push direto na `main` (detalhes em `docs/agents/workflow.md`).
+- Plataforma de referência: Linux com bash, igual à CI. Comandos em PowerShell que aparecem no plano do M0 são equivalentes para quem desenvolve no Windows; scripts e runbooks novos são escritos para bash.
 - Idioma: documentação e tickets em português-BR; identificadores de código e termos do glossário em inglês.

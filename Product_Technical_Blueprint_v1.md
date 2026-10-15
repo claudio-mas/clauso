@@ -1,16 +1,18 @@
 # Product & Technical Blueprint v1
 ## Commercial Closing Engine
 
-**Versão:** 1.1  
-**Data:** 14/10/2026  
+**Versão:** 1.2  
+**Data:** 15/10/2026  
 **Status:** Baseline para planejamento técnico, alinhada ao glossário `CONTEXT.md`  
 **Nome provisório do produto:** Commercial Closing Engine — CCE
 
-> **Origem:** consolidação do Blueprint v1 da conversa [Análise do Fyrmo](https://chatgpt.com/c/6acfc791-30a8-83ea-a8d2-5ec5988a0e77). Seções 1–41 recuperadas da conversa; seções 42–93 e conclusão fornecidas pelo autor nesta sessão. O conteúdo e as decisões foram preservados, com hierarquia Markdown, tabelas e blocos de código normalizados. Marcadores internos de citação foram removidos. As referências às capacidades do Fyrmo registram a análise original, sem nova verificação comercial. Documento de especificação; não declara funcionalidades já implementadas.
+> **Origem:** consolidação do Blueprint v1 a partir de uma conversa de análise do Fyrmo. Seções 1–41 recuperadas da conversa; seções 42–93 e conclusão fornecidas pelo autor nesta sessão. O conteúdo e as decisões foram preservados, com hierarquia Markdown, tabelas e blocos de código normalizados. Marcadores internos de citação foram removidos. As referências às capacidades do Fyrmo registram a análise original, sem nova verificação comercial. Documento de especificação; não declara funcionalidades já implementadas.
 
 **Documento relacionado:** [Technical Implementation Plan — Milestone 0: Foundation](Technical_Implementation_Plan_Milestone_0_Foundation.md).
 
 **Alinhamento ao glossário (v1.1):** os termos de domínio deste documento seguem o [CONTEXT.md](CONTEXT.md), e as decisões que o alinhamento exigiu estão registradas nos ADRs 0018–0022 em `docs/adr/`. Mudanças em relação à v1.0: (1) Tenant, Host, Customer, Contact e Recipient passam a ter definições fixas (§10–§11); (2) `Workspace` sai do modelo até existir um caso real; (3) a validade da oferta passa da Proposal para a ProposalVersion (§12–§13); (4) os estados de Proposal, Publication, Contract e Payment passam a ser ciclos independentes (§15); (5) um Quote corresponde a uma única Proposal (§16, §35); (6) cada Publication é fixada em uma única ProposalVersion (§17); (7) o Total é sempre calculado pelo CCE (§21); (8) a apresentação é congelada no aceite (§25); (9) uma Proposal aceita pode ter vários Payments (§29); (10) a evidência de aceite é retida mesmo diante de pedido de exclusão (§49). O Technical Implementation Plan do Milestone 0 não foi revisado nesta passagem.
+
+**Revisão v1.2:** (1) publicar exige um User ou uma API key com o scope `proposal:publish`, e a revisão humana obrigatória vale para versões geradas pela IA do CCE (ADR-0023, §15.1, §16, §36); (2) `READY` deixa de ser estado da Proposal: *draft* e *ready* são atributos da ProposalVersion (§15.1); (3) a trava da ProposalVersion no banco admite só as transições de publicação e aceite (ADR-0024); (4) migrations de dados percorrem os Tenants um a um, sem bypass de RLS (ADR-0025, §38); (5) os ADRs 001–010 deste Blueprint passam a existir como arquivos `docs/adr/0001`–`0010` (§73).
 
 **Navegação:** produto e arquitetura (1–10); domínio e propostas (11–19); IA e conversação (20–24); fechamento e integração (25–40); stack e infraestrutura (41–55); MVPs e integração (56–72); decisões, riscos e roadmap (73–93).
 
@@ -497,21 +499,22 @@ Mudança em relação à v1.0: saíram da Proposal `VIEWED` (é dado de Engageme
 ### 15.1 Proposal
 
 ```text
-DRAFT ──► READY ──► PUBLISHED ──► NEGOTIATING ──► ACCEPTED
-                        │              │
-                        └──► REJECTED ◄┘
+DRAFT ──► PUBLISHED ──► NEGOTIATING ──► ACCEPTED
+              │              │
+              └──► REJECTED ◄┘
 ```
 
 | Estado | Significado |
 |---|---|
-| `DRAFT` | Versão ainda não revisada por humano. Versões geradas por IA sempre nascem aqui. |
-| `READY` | Revisada por um humano. Publicar exige ação explícita de um `User`. |
-| `PUBLISHED` | Existe ao menos uma Publication ativa. |
+| `DRAFT` | A Proposal ainda não teve nenhuma Publication. |
+| `PUBLISHED` | Existe ao menos uma Publication ativa. Publicar exige ação explícita de um `User` ou de uma API key com o scope `proposal:publish` (ADR-0023). |
 | `NEGOTIATING` | Existe intenção registrada de mudar: o Recipient pede ajuste, ou o vendedor cria uma nova versão depois da primeira Publication. Publicar a nova versão devolve a `PUBLISHED`. |
 | `REJECTED` | Decisão explícita do Recipient. Não é final: publicar uma nova versão reabre a Proposal. |
 | `ACCEPTED` | Acceptance registrado. A Proposal deixa de aceitar novas versões. |
 
 `PUBLISHED → ACCEPTED` direto é válido.
+
+A revisão não é estado da Proposal, e sim atributo de cada `ProposalVersion`: *draft* ou *ready*. Uma versão gerada pela IA do CCE nasce *draft* e só pode ser publicada depois de marcada como *ready* por um ator autorizado; conteúdo enviado pelo Host pode ser publicado diretamente (ADR-0023). Na v1.1 existia o estado `READY` da Proposal; ele foi removido.
 
 ### 15.2 Publication
 
@@ -551,10 +554,10 @@ AI Generation
 ProposalVersion V1
       │
       ▼
-Revisão humana
+Revisão humana (obrigatória se o conteúdo veio da IA)
       │
       ▼
-Publish
+Publish (User ou API key com proposal:publish)
       │
       ▼
 URL pública
@@ -1173,6 +1176,7 @@ Exemplo:
 ```text
 proposal:read
 proposal:write
+proposal:publish
 payment:read
 payment:create
 webhook:manage
@@ -1236,6 +1240,8 @@ menor custo
 ```
 
 Isolamento lógico continuará obrigatório.
+
+A RLS é forçada também para o role proprietário das tabelas. Migrations de dados percorrem os Tenants um a um, cada um em sua transação com o contexto aplicado, sem `BYPASSRLS` (ADR-0025).
 
 ---
 
@@ -2191,8 +2197,11 @@ ADRs deverão nascer junto com o projeto.
 | ADR-020 — Um Quote, uma Proposal | Reenvio vira nova versão; após o aceite é rejeitado | Idempotência e histórico de versões |
 | ADR-021 — Apresentação congelada no aceite | Template, Brand e PDF congelados | Evidência reproduzível |
 | ADR-022 — Evidência retida | O Evidence Package não é apagado a pedido do titular | Prova do aceite contra pedido de exclusão (LGPD) |
+| ADR-023 — Publicação por API key | Publicar exige User ou API key com `proposal:publish`; revisão humana obrigatória para conteúdo da IA | Golden Path pela API sem abrir mão da revisão do que a IA gera |
+| ADR-024 — Trava de versão no banco | Gatilho admite só as transições de publicação e aceite | Imutabilidade garantida pelo banco sem impedir o aceite |
+| ADR-025 — Migrations de dados por Tenant | Backfills percorrem os Tenants um a um, sem bypass de RLS | Preservar o isolamento no processo mais privilegiado |
 
-Os ADRs 011–017 estão reservados pelo plano do Milestone 0; por isso os ADRs deste alinhamento começam em 018.
+Os ADRs 011–017 estão reservados pelo plano do Milestone 0; por isso os ADRs deste alinhamento começam em 018. Os arquivos ficam em `docs/adr/` com quatro dígitos (`0001-...md`).
 
 Razões para ADR-010:
 

@@ -14,6 +14,16 @@
 **Data:** 14/10/2026  
 **Status:** plano pronto para implementação e revisão; código e pipelines ainda não executados.
 
+> **Nota de revisão (15/10/2026).** Este plano não foi reescrito. Onde ele diverge dos tickets em `.scratch/milestone-0-foundation/issues/`, **os tickets prevalecem**. Divergências conhecidas:
+>
+> 1. **Raiz do repositório.** A árvore da seção 3 é criada na raiz deste repositório, ao lado de `CONTEXT.md` e `docs/`, e não numa pasta `commercial-closing-engine/`.
+> 2. **ADRs.** Os arquivos usam quatro dígitos (`docs/adr/0001-modular-monolith.md`, não `001-...`). Os ADRs `0001`–`0010` já existem, escritos a partir do Blueprint. Os `0011`–`0017` da seção 16 são escritos junto com o ticket que toma cada decisão (01, 05, 06, 07, 08 e 10), não todos no ticket 11. Existem também os ADRs `0018`–`0025`.
+> 3. **Escopo reduzido.** O release com publicação no GHCR (seção 15.2), o contrato de CD (seção 15.3), os runbooks `deployment.md` e `backup-restore.md`, o ensaio de restore (Tarefa 9 e seção 18) e os itens correspondentes da Definition of Done (seção 20) saíram do M0 e foram para o ticket 12, bloqueado pela decisão de hospedagem. No M0 não existe `.github/workflows/release.yml`, e há um runbook novo, `branch-protection.md`.
+> 4. **Fluxo por Pull Request.** Toda mudança chega à `main` por PR, com a CI rodando na PR antes do merge (`docs/agents/workflow.md`). O merge local com `git merge --no-ff` não é mais usado.
+> 5. **Plataforma de referência.** Linux com bash, igual à CI. Os comandos em PowerShell deste plano valem como equivalentes para Windows; scripts e runbooks novos são escritos para bash.
+> 6. **Migrations de dados.** Como a RLS é forçada também para o `cce_migrator`, backfills percorrem os Tenants um a um (ADR-0025). O runbook de migrations (ticket 09) descreve o padrão.
+> 7. **Versões.** As faixas da seção 4.1 são piso. Em 15/10/2026, `redis>=6,<8` excluía a versão atual do redis-py (8.x) e o uv já estava na 0.13. A Tarefa 1 decide se amplia as faixas e registra a escolha no ADR-011.
+
 ## Global Constraints
 
 - Preservar a estrutura do Blueprint: apps, packages, infrastructure, docs e tests.

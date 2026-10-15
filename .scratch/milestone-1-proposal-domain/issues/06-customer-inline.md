@@ -12,4 +12,4 @@
 - [ ] Com objeto inline e Customer inexistente para o par `external_source` + `external_id`, o Customer é criado (mesmas validações do ticket 02) na mesma transação da Proposal; se a Proposal falha, o Customer também não existe
 - [ ] Com Customer já existente para o par, ele é usado e nenhum campo dele é alterado, mesmo que o corpo traga valores diferentes
 - [ ] A criação do Customer inline grava AuditEvent
-- [ ] Scope de customer é exigido além do de proposal quando o Customer for criado; sem ele, 403 e nada é gravado
+- [ ] Sempre que o corpo traz o objeto `customer`, o scope `customer:write` é exigido além de `proposal:write`, exista ou não o Customer; sem ele, 403 e nada é gravado. Com `customer_id`, basta `proposal:write`
