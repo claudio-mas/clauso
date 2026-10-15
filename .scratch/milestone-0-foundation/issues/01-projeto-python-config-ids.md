@@ -4,7 +4,7 @@
 
 **Blocked by:** None
 
-**Status:** in-progress
+**Status:** in-review
 
 **Plano:** Technical Implementation Plan do M0, Tarefa 1 e seções 3, 4 e 5. **Vocabulário:** Tenant (`CONTEXT.md`).
 
