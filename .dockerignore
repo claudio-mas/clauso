@@ -1,0 +1,30 @@
+# Nada disto entra no contexto de build da imagem
+.git
+.github
+.scratch
+.maestri
+
+# Segredos e ambientes locais
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+apps/api/.venv/
+
+# Caches de ferramentas
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Cobertura e artefatos de build
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
