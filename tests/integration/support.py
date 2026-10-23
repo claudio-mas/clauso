@@ -5,6 +5,8 @@ import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
+import pytest
+from pydantic import SecretStr
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import DBAPIError
 
@@ -58,16 +60,47 @@ def run_compose(
 
 def reapply_bootstrap(alternative_password: str) -> subprocess.CompletedProcess[str]:
     """Reexecuta o bootstrap no container com outra senha no ambiente."""
+    # `-e NOME` sem `=valor`: o Compose lê o valor do ambiente do cliente e ele não aparece no argv.
     return run_compose(
         "exec",
         "-T",
         "-e",
-        f"CCE_APP_DB_PASSWORD={alternative_password}",
+        "CCE_APP_DB_PASSWORD",
         "-e",
-        f"CCE_MIGRATOR_DB_PASSWORD={alternative_password}",
+        "CCE_MIGRATOR_DB_PASSWORD",
         "postgres",
         BOOTSTRAP_SCRIPT,
+        extra_env={
+            "CCE_APP_DB_PASSWORD": alternative_password,
+            "CCE_MIGRATOR_DB_PASSWORD": alternative_password,
+        },
     )
+
+
+def require(condition: bool, message: str) -> None:
+    """Falha com texto fixo e sem traceback.
+
+    Use no lugar de `assert` sempre que a expressão envolver ambiente, DSN ou senha: a introspecção
+    do `assert` imprimiria os valores dos operandos na saída do pytest.
+    """
+    if not condition:
+        pytest.fail(message, pytrace=False)
+
+
+def find_leaks(haystack: str, forbidden: Mapping[str, str | SecretStr]) -> list[str]:
+    """Rótulos dos valores proibidos que aparecem em `haystack` (nunca os valores)."""
+    leaked = []
+    for label, value in forbidden.items():
+        text = value.get_secret_value() if isinstance(value, SecretStr) else value
+        if text and text in haystack:
+            leaked.append(label)
+    return leaked
+
+
+def assert_no_leaks(haystack: str, forbidden: Mapping[str, str | SecretStr], where: str) -> None:
+    """Falha citando só `where` e os rótulos, nunca o valor proibido."""
+    leaked = find_leaks(haystack, forbidden)
+    require(not leaked, f"{where} contains: {', '.join(leaked)}")
 
 
 def read_dotenv(path: Path) -> dict[str, str]:

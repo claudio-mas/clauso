@@ -11,7 +11,7 @@ from sqlalchemy.pool import NullPool
 
 from cce.shared.config import MigrationSettings, Settings
 
-from .support import reapply_bootstrap, sqlstate, with_password
+from .support import assert_no_leaks, reapply_bootstrap, require, sqlstate, with_password
 
 pytestmark = pytest.mark.integration
 
@@ -280,21 +280,27 @@ async def test_bootstrap_is_reapplicable_and_never_rotates_passwords(
     db_settings: Settings, migrator_settings: MigrationSettings
 ) -> None:
     other_password = secrets.token_hex(32)
+    original_urls = {
+        "app": db_settings.database_url.get_secret_value(),
+        "migrator": migrator_settings.migrator_database_url.get_secret_value(),
+    }
+    forbidden = {"alternative password": other_password}
     before = await _role_snapshot(db_settings)
 
     for _ in range(2):
         result = reapply_bootstrap(other_password)
-        assert result.returncode == 0, "bootstrap reapplication failed"
-        assert other_password not in result.stdout + result.stderr
+        require(result.returncode == 0, "bootstrap reapplication failed")
+        assert_no_leaks(" ".join(result.args), forbidden, "the docker compose argv")
+        assert_no_leaks(result.stdout + result.stderr, forbidden, "the bootstrap output")
 
     assert await _role_snapshot(db_settings) == before
     # As senhas originais continuam valendo; a "nova" não foi aplicada a nenhum role.
-    for url in (
-        db_settings.database_url.get_secret_value(),
-        migrator_settings.migrator_database_url.get_secret_value(),
-    ):
-        assert await _login_outcome(with_password(url, other_password)) == INVALID_PASSWORD
-        assert await _login_outcome(url) == "ok"
+    # Os DSNs ficam em variáveis: um `assert` com eles na expressão os mostraria numa falha.
+    for role, url in original_urls.items():
+        rejected = await _login_outcome(with_password(url, other_password))
+        accepted = await _login_outcome(url)
+        require(rejected == INVALID_PASSWORD, f"the alternative password works for {role}")
+        require(accepted == "ok", f"the original password no longer works for {role}")
 
 
 async def _role_snapshot(settings: Settings) -> list[tuple[object, ...]]:
