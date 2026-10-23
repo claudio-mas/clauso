@@ -11,7 +11,7 @@ from sqlalchemy.pool import NullPool
 
 from cce.shared.config import MigrationSettings, Settings
 
-from .support import run_compose, sqlstate, with_password
+from .support import reapply_bootstrap, sqlstate, with_password
 
 pytestmark = pytest.mark.integration
 
@@ -283,16 +283,7 @@ async def test_bootstrap_is_reapplicable_and_never_rotates_passwords(
     before = await _role_snapshot(db_settings)
 
     for _ in range(2):
-        result = run_compose(
-            "exec",
-            "-T",
-            "-e",
-            f"CCE_APP_DB_PASSWORD={other_password}",
-            "-e",
-            f"CCE_MIGRATOR_DB_PASSWORD={other_password}",
-            "postgres",
-            "/docker-entrypoint-initdb.d/01-bootstrap.sh",
-        )
+        result = reapply_bootstrap(other_password)
         assert result.returncode == 0, "bootstrap reapplication failed"
         assert other_password not in result.stdout + result.stderr
 
