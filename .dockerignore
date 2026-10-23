@@ -28,3 +28,8 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# O build copia só o que o Dockerfile pede; estes diretórios nunca são necessários
+docs/
+tests/
+scripts/
