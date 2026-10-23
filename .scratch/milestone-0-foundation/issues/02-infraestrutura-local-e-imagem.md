@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** in-review
+**Status:** done
 
 **Plano:** Tarefa 2 e seções 6 e 7.
 
@@ -38,3 +38,20 @@ Opiniões sobre os desvios, todas favoráveis:
 - Imagens-base por tag: aceitável na baseline local; fixar digests antes da primeira publicação (plano, seção 6).
 
 Sem conflito com ADR-0003 nesta etapa. O ticket volta a `in-progress` para os dois itens acima.
+
+### 2026-10-23 — Parecer do Revisor (Lupa), rodada 2: aprovado
+
+PR #3, head `8593478`. Os dois achados importantes da rodada 1 foram corrigidos, sem problemas novos. Escopo da rodada: somente `tests/integration/` (`support.py`, `test_compose_config.py`, `test_db_roles.py`, `test_failure_output.py`) e o `Status:` deste ticket; bootstrap, Compose, Dockerfile e demais arquivos de produção não mudaram.
+
+1. Senha fora do argv: `reapply_bootstrap` usa `exec -e CCE_APP_DB_PASSWORD -e CCE_MIGRATOR_DB_PASSWORD` sem `=valor`; os valores chegam só pelo ambiente do subprocesso, e `run_compose` remove as `CCE_*` herdadas e admite apenas as fornecidas explicitamente.
+2. Falhas sem segredos: `require` usa `pytest.fail` com texto fixo e `pytrace=False`; `find_leaks` e `assert_no_leaks` mostram só rótulos; os asserts sobre configuração, ambiente, DSNs e `CompletedProcess` sensíveis foram removidos. A varredura de `tests/integration` não achou outro vazamento.
+3. Contraprova do Revisor, em memória e sem editar arquivos: com o comportamento antigo (senha no argv) e com um `assert_no_leaks` que ecoa o segredo, os dois testes de regressão falharam. Eles detectam os defeitos e não passam incondicionalmente. O teste de ponta a ponta (Compose adulterado, `pytest -vv`) passou.
+
+Checks do Revisor, em cópia nova via `git archive`: `uv sync --locked`, `uv lock --check` (76 pacotes), `pytest tests/unit` (223 passed), Ruff, `ruff format --check` (17 arquivos), mypy estrito, e 16 testes de integração sem daemon passaram.
+
+Limites declarados pelo Revisor: não reexecutou o daemon Docker, os testes de banco e de serviços, o build e o runtime da imagem, a entrega por `exec` no container nem o teardown (Docker inacessível no sandbox dele). Esses itens vêm do Regente: 39 testes de integração verdes contra Docker real, teardown sem sobras e varredura das três senhas geradas nos arquivos rastreados e no diff, sem ocorrências.
+
+Pontos para os próximos tickets (não bloqueiam este):
+- Ticket 03: acrescentar o `COPY` de `alembic.ini` e `infrastructure/migrations` no `api.Dockerfile`.
+- Ticket 06: toda função `SECURITY DEFINER` precisa de `search_path` seguro (incluindo `pg_temp`), referências qualificadas, owner `NOLOGIN`, grants mínimos e `GRANT EXECUTE` explícito.
+- Antes da primeira publicação de imagem: fixar as imagens-base por digest (plano, seção 6).
