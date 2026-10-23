@@ -321,7 +321,7 @@ async def _login_outcome(url: str | URL) -> str:
     try:
         async with engine.connect() as connection:
             await connection.execute(text("select 1"))
-    except DBAPIError as error:
+    except Exception as error:  # falha de conexão chega como erro do asyncpg, sem embrulho
         return sqlstate(error) or "unknown"
     finally:
         await engine.dispose()

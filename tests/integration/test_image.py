@@ -18,8 +18,10 @@ def docker(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["docker", *args], capture_output=True, text=True, check=False, cwd=ROOT)
 
 
-def run_in_image(*command: str) -> subprocess.CompletedProcess[str]:
-    return docker("run", "--rm", "--network", "none", IMAGE, *command)
+def run_in_image(*command: str, user: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Executa na imagem, sem rede. `user="0"` serve só para inspecionar o sistema de arquivos."""
+    options = ["--user", user] if user else []
+    return docker("run", "--rm", "--network", "none", *options, IMAGE, *command)
 
 
 @pytest.fixture(scope="module")
@@ -46,6 +48,7 @@ def test_image_has_no_uv() -> None:
         "sh",
         "-c",
         "command -v uv uvx || true; find / -xdev \\( -name uv -o -name uvx \\) -type f",
+        user="0",
     )
 
     assert found.returncode == 0
@@ -54,7 +57,7 @@ def test_image_has_no_uv() -> None:
 
 @pytest.mark.usefixtures("image")
 def test_image_has_no_dotenv_files() -> None:
-    found = run_in_image("find", "/", "-xdev", "-name", ".env*")
+    found = run_in_image("find", "/", "-xdev", "-name", ".env*", user="0")
 
     assert found.returncode == 0
     assert found.stdout.strip() == ""

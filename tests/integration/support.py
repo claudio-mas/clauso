@@ -53,8 +53,10 @@ def read_dotenv(path: Path) -> dict[str, str]:
     return values
 
 
-def sqlstate(error: DBAPIError) -> str | None:
-    state = getattr(error.orig, "sqlstate", None) or getattr(error.orig, "pgcode", None)
+def sqlstate(error: BaseException) -> str | None:
+    """SQLSTATE de um erro do asyncpg, direto (conexão) ou embrulhado pelo SQLAlchemy."""
+    wrapped = error.orig if isinstance(error, DBAPIError) else error
+    state = getattr(wrapped, "sqlstate", None) or getattr(wrapped, "pgcode", None)
     return str(state) if state else None
 
 
