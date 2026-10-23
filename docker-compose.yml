@@ -1,0 +1,94 @@
+# Ambiente local. As variáveis vêm do dotenv gerado por scripts/init_env.py; o serviço api não
+# usa env_file e recebe apenas as credenciais de runtime. Não é manifesto de produção.
+# Ambiente de teste: docker compose --env-file .env.test -p cce-test ...
+name: cce
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: $CCE_POSTGRES_DB
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: $CCE_POSTGRES_ADMIN_PASSWORD
+      CCE_APP_DB_PASSWORD: $CCE_APP_DB_PASSWORD
+      CCE_MIGRATOR_DB_PASSWORD: $CCE_MIGRATOR_DB_PASSWORD
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/docker/postgres/01-bootstrap.sh:/docker-entrypoint-initdb.d/01-bootstrap.sh:ro
+      - ./infrastructure/docker/postgres/bootstrap.sql:/opt/cce/bootstrap.sql:ro
+    healthcheck:
+      # -h 127.0.0.1: o servidor temporário da inicialização só escuta no socket Unix, então o
+      # serviço só fica saudável depois que o bootstrap terminou e o servidor definitivo subiu.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d \"$$POSTGRES_DB\""]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7.4-bookworm
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  migrate:
+    image: cce-api:local
+    build:
+      context: .
+      dockerfile: infrastructure/docker/api.Dockerfile
+    environment:
+      CCE_ENV: $CCE_ENV
+      CCE_MIGRATOR_DATABASE_URL: postgresql+asyncpg://cce_migrator:$CCE_MIGRATOR_DB_PASSWORD@postgres:5432/$CCE_POSTGRES_DB
+    command: ["alembic", "-c", "alembic.ini", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    tmpfs: ["/tmp"]
+
+  api:
+    image: cce-api:local
+    build:
+      context: .
+      dockerfile: infrastructure/docker/api.Dockerfile
+    environment:
+      CCE_ENV: $CCE_ENV
+      CCE_VERSION: $CCE_VERSION
+      CCE_LOG_LEVEL: $CCE_LOG_LEVEL
+      CCE_LOG_FORMAT: json
+      CCE_DATABASE_URL: postgresql+asyncpg://cce_app:$CCE_APP_DB_PASSWORD@postgres:5432/$CCE_POSTGRES_DB
+      CCE_REDIS_URL: redis://redis:6379/0
+      CCE_ALLOWED_ORIGINS: $CCE_ALLOWED_ORIGINS
+      CCE_API_KEY_PEPPERS: $CCE_API_KEY_PEPPERS
+      CCE_API_KEY_ACTIVE_PEPPER_VERSION: $CCE_API_KEY_ACTIVE_PEPPER_VERSION
+      CCE_API_KEY_TTL_DAYS: $CCE_API_KEY_TTL_DAYS
+      CCE_DOCS_ENABLED: $CCE_DOCS_ENABLED
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  postgres_data:
+  redis_data:
