@@ -6,6 +6,7 @@ sentinelas, para continuarem provando algo se esses helpers mudarem.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 import subprocess
@@ -40,7 +41,7 @@ def test_reapply_bootstrap_keeps_the_alternative_password_out_of_argv(
         calls.append({"argv": argv, "env": options["env"]})
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    monkeypatch.setattr(support.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
 
     support.reapply_bootstrap(password)
 
@@ -62,7 +63,7 @@ def test_run_compose_drops_cce_variables_except_the_ones_it_is_given(
         recorded.update(options["env"])
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    monkeypatch.setattr(support.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setenv("CCE_ENV", "test")
     monkeypatch.setenv("CCE_DATABASE_URL", "ignored")
 
@@ -127,7 +128,7 @@ def test_compose_config_tests_do_not_print_secrets_when_they_fail(tmp_path: Path
             "-m",
             "pytest",
             "tests/integration/test_compose_config.py",
-            "-q",
+            "-vv",  # sem truncar a introspecção: é o pior caso para vazamento
             "-p",
             "no:cacheprovider",
         ],
@@ -140,8 +141,33 @@ def test_compose_config_tests_do_not_print_secrets_when_they_fail(tmp_path: Path
     output = result.stdout + result.stderr
 
     # O Compose adulterado precisa mesmo reprovar os testes, senão a prova seria vazia.
-    assert result.returncode != 0
-    assert "FAILED" in output
+    # `assert` aqui mostraria a saída inteira, justamente o que não pode vazar.
+    if result.returncode == 0 or "FAILED" not in output:
+        pytest.fail("the leaking Compose did not make test_compose_config.py fail")
     leaked = [label for label, value in forbidden.items() if value in output]
     if leaked:
         pytest.fail(f"pytest output printed: {', '.join(leaked)}")
+
+
+@pytest.mark.integration
+def test_compose_exec_delivers_the_variable_by_name_without_argv() -> None:
+    """Sem isto, o teste de reaplicação passaria mesmo se a senha nunca chegasse ao container."""
+    password = sentinel()
+    digest = hashlib.sha256(password.encode()).hexdigest()
+
+    result = support.run_compose(
+        "exec",
+        "-T",
+        "-e",
+        "CCE_APP_DB_PASSWORD",
+        "postgres",
+        "sh",
+        "-c",
+        'printf %s "$CCE_APP_DB_PASSWORD" | sha256sum | cut -d" " -f1',
+        extra_env={"CCE_APP_DB_PASSWORD": password},
+    )
+
+    if result.returncode != 0 or result.stdout.strip() != digest:
+        pytest.fail("the container did not receive the variable value")
+    if password in " ".join(result.args):
+        pytest.fail("the value is in the argv")
