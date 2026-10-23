@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Plano:** Tarefa 2 e seções 6 e 7.
 
