@@ -1,0 +1,100 @@
+# Desenvolvimento local
+
+Como subir a infraestrutura local do CCE (PostgreSQL 17, Redis 7.4 e a imagem da API) e rodar os testes. Plataforma de referência: Linux com bash. Este Compose não é um manifesto de produção.
+
+## Estado atual
+
+Só a infraestrutura existe. A API ainda não roda: o serviço `api` falha ao iniciar porque `cce.main` não existe (ticket 07), e o serviço `migrate` falha porque o Alembic ainda não está configurado (ticket 03). Nada mascara isso com um health falso. Suba apenas `postgres` e `redis`.
+
+## Pré-requisitos
+
+- Docker com Compose v2.
+- uv 0.12.10 (a versão fixada no ADR-0011) e Python 3.12 (`uv python install 3.12`).
+
+```bash
+uv sync --project apps/api --locked --group dev
+```
+
+## Segredos locais
+
+O dotenv é gerado com segredos novos e nunca é commitado. O gerador recusa sobrescrever um arquivo existente e não imprime nenhum valor.
+
+```bash
+python3 scripts/init_env.py --target .env --env local --database-name cce
+python3 scripts/init_env.py --target .env.test --env test --database-name cce_test
+```
+
+## Subir e verificar
+
+```bash
+docker compose up -d --wait postgres redis
+docker compose ps
+```
+
+O PostgreSQL só fica saudável depois que o bootstrap terminou (roles `cce_migrator`, `cce_app` e `cce_auth`, schemas `cce` e `cce_private`). O bootstrap roda **uma única vez, na criação do volume**.
+
+Para derrubar, preservando os dados:
+
+```bash
+docker compose down
+```
+
+`docker compose down -v` apaga os volumes e todos os dados do ambiente. Use só em um ambiente descartável, como o de teste. Não é a forma de corrigir uma configuração.
+
+## Ambiente de teste
+
+O ambiente de teste usa o dotenv `.env.test`, o banco `cce_test` e o **projeto Compose `cce-test`**, com volumes próprios. Passe sempre `-p cce-test` junto com `--env-file .env.test`; sem o `-p`, o Compose usaria o projeto `cce` e os volumes do ambiente local.
+
+```bash
+docker compose --env-file .env.test -p cce-test up -d --wait postgres redis
+CCE_ENV_FILE=.env.test uv run --project apps/api --locked pytest tests/integration
+docker compose --env-file .env.test -p cce-test down -v
+```
+
+Os dois ambientes publicam as mesmas portas em loopback (5432 e 6379). Não suba os dois ao mesmo tempo.
+
+Os testes de integração recusam rodar fora de `CCE_ENV=test` e usam conexões reais como `cce_app` e `cce_migrator`. O teste da imagem constrói `cce-api:test` e o remove no fim.
+
+## Roles e credenciais
+
+| Role | Login | Uso |
+|---|:---:|---|
+| `postgres` | sim | Bootstrap e infraestrutura local; nunca a API |
+| `cce_migrator` | sim | Dono dos schemas; migrations e CLI administrativa |
+| `cce_app` | sim | Runtime da API |
+| `cce_auth` | não | Dono da função de lookup de API key (tickets seguintes) |
+
+O serviço `api` recebe só a credencial de `cce_app`. A URL do migrator e a senha do `postgres` ficam fora dele.
+
+Alterar uma senha no dotenv **não** altera o role existente, e o bootstrap nunca rotaciona senhas. Para trocar uma senha sem apagar dados, altere o role e depois o dotenv:
+
+```bash
+docker compose exec postgres sh -c 'psql -U postgres -d "$POSTGRES_DB"'
+# no prompt do psql, sem a senha na linha de comando nem no histórico do shell:
+#   \password cce_app
+```
+
+Reaplicar atributos e grants do bootstrap (não altera senhas):
+
+```bash
+docker compose exec postgres /docker-entrypoint-initdb.d/01-bootstrap.sh
+```
+
+Funções criadas por `cce_migrator` e `cce_auth` não são executáveis por `PUBLIC`. Cada função que `cce_app` precise executar exige um `GRANT EXECUTE` explícito na migration que a cria.
+
+## Imagem da API
+
+```bash
+docker compose build migrate   # a mesma imagem `cce-api:local` serve a API e o job de migration
+```
+
+A imagem roda como usuário `10001`, não contém dotenv, `uv` nem dependências de desenvolvimento, e instala o pacote `cce` sem o código-fonte.
+
+## Qualidade
+
+```bash
+uv run --project apps/api --locked ruff check --config apps/api/pyproject.toml apps/api/src tests scripts
+uv run --project apps/api --locked ruff format --check --config apps/api/pyproject.toml apps/api/src tests scripts
+uv run --project apps/api --locked mypy --config-file apps/api/pyproject.toml apps/api/src tests scripts
+uv run --project apps/api --locked pytest tests/unit
+```
