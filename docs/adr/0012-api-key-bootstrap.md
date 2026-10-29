@@ -1,7 +1,7 @@
 # ADR-0012: Autenticação por API key, lookup restrito e bootstrap administrativo
 
 **Data:** 29/10/2026
-**Status:** Proposto (aguarda aprovação da pessoa na Pull Request do ticket 06 do M0)
+**Status:** Aceito (29/10/2026)
 
 ## Contexto
 
