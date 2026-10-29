@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** in-review
+**Status:** done
 
 **Plano:** Tarefa 4 e seção 11.1.
 
@@ -61,3 +61,16 @@ Estado: três rodadas regulares sem aprovação. O ticket vai para `blocked` à 
 ### 2026-10-29 — Decisão da pessoa: rodada extra
 
 Após as três rodadas sem aprovação, a pessoa decidiu autorizar **uma rodada extra** (opção 1): o Programador corrige somente o achado restante da rodada 3 (o hook compartilhado `tests/sensitive_plugin.py` preserva `report.sections` e a cadeia de exceções no caminho `pytrace=False`; correção só em `tests/`) e o Revisor rerrevisa só esse ponto. O ticket volta de `blocked` para `in-progress`. Se esta rodada extra também não for aprovada, o ticket volta a `blocked` e a decisão retorna à pessoa.
+
+### 2026-10-29 — Parecer do Revisor (Lupa), rodada extra: aprovado
+
+PR #6, head `ecd252c`, rerrevisão restrita ao achado da rodada 3 (`report.sections` e cadeia de exceções no ramo `pytrace=False` de `tests/sensitive_plugin.py`), com as conclusões favoráveis anteriores sobre as primitivas criptográficas mantidas. Sem problemas bloqueantes ou importantes.
+
+- `report.sections` é limpo para TODO relatório de item marcado, em setup, call e teardown, antes dos retornos (cobre também stdout e stderr de teste aprovado exibidos por `-rA`). Nas falhas `pytrace=False`, o `longrepr` é reconstruído só com `Failed.msg`, sem aproveitar o traceback nem o contexto original; nas demais falhas, texto genérico com fase e nome do tipo, sem a mensagem da exceção.
+- As reproduções do Revisor com pytest real (`-vv -rA --tb=long --showlocals`) — `print(KEY)` seguido de `require`; `RuntimeError(KEY)` capturado seguido de `require`; `print` mais `require` no teardown — e a matriz ampliada (stderr, log, setup com cadeia, teste aprovado imprimindo a chave) não deixam nem a chave inteira nem o segredo na saída combinada. As mensagens fixas úteis permanecem, o resultado continua `9 failed, 2 passed, 3 errors` com setup e teardown nas fases corretas, e a falha não marcada continua exibindo o valor público de controle.
+- Contrato de `Failed.msg`: varredura dos três arquivos marcados `sensitive` (`test_key_security.py`, `test_key_failure_output.py`, `test_sensitive_hook.py`), incluindo mensagens indiretas por `require` e `assert_no_leaks`: nenhum chamador passa chave, segredo, pepper, digest ou saída capturada à mensagem de `pytest.fail(..., pytrace=False)`; as mensagens são literais ou rótulos, contagens, nomes de tipos e nomes de casos públicos. O ramo depende desse contrato auditado: `pytrace=False` não é, por si só, um sanitizador de mensagem arbitrária.
+- Outcome e fase: `wrapper=True` recebe e devolve o `TestReport` sem escrever `outcome` nem `when`; o marcador é consultado antes de qualquer mutação, e testes não marcados conservam o diagnóstico. Probe adicional com `skip`, `xfail`, `xpass` não estrito e `xpass` estrito: preservados, `xpass` estrito continuou falha, sem sentinela na saída. Nada tornou verde um teste que falhou.
+- Contraprovas em memória, sem editar arquivos do projeto: restaurar o hook de `ac8397a`, retirar só `report.sections = []` e retirar só a reconstrução do `longrepr` fizeram cair o meta-teste real `test_marked_tests_never_show_the_key_in_any_kind_of_failure`, com mensagens fixas e sem repetir as sentinelas.
+- Escopo: só `tests/sensitive_plugin.py` e `tests/unit/test_sensitive_hook.py` mudaram; `tests/conftest.py`, `security.py`, `service.py`, demais arquivos de produção, `CONTEXT.md` e ADRs intactos.
+
+Checks do Revisor: `uv sync --locked`, `uv lock --check` (76 pacotes), `pytest tests/unit` (586 passed em 57 s), Ruff, `ruff format --check` (51 arquivos), mypy estrito e `git diff --check` passaram; migrations (8 passed) e integração (168 passed, 1 failed e 6 errors nos sete testes de imagem e `migrate`, por escrita proibida em `~/.docker/buildx/activity`, que ele não reproduziu nem escalonou). Esses sete vêm do Regente: 175 passed na suíte completa e Docker sem sobras. O hook compartilhado não quebrou as suítes reproduzidas.
