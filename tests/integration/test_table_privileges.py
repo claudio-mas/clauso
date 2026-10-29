@@ -1,4 +1,4 @@
-"""Dono das tabelas e privilégios dos roles do produto depois da migration 0002 (RLS)."""
+"""Dono das tabelas e privilégios dos roles do produto depois das migrations 0002 e 0003."""
 
 from __future__ import annotations
 
@@ -58,18 +58,28 @@ ACL_ENTRIES = """
     order by table_name, column_name nulls first, grantee, privilege
 """
 
-# Exatamente o que o runtime recebe (plano do M0, seção 10.1). Nada para cce_auth nem para PUBLIC;
-# `secret_digest` e `pepper_version` não aparecem em nenhuma linha; `alembic_version` fica sem
-# grants até o ticket 06 (readiness).
+# Exatamente o que o runtime recebe (plano do M0, seções 9.2 e 10.1) e o que `cce_auth` recebe na
+# 0003 (seção 11.2): só SELECT em colunas, as mesmas do lookup. Nada para PUBLIC; `secret_digest` e
+# `pepper_version` só aparecem na linha de `cce_auth`; `alembic_version` só dá SELECT ao runtime.
 EXPECTED_ACL = [
+    ("alembic_version", None, "cce_app", "SELECT", False),
     ("api_keys", "created_at", "cce_app", "SELECT", False),
     ("api_keys", "expires_at", "cce_app", "SELECT", False),
+    ("api_keys", "expires_at", "cce_auth", "SELECT", False),
     ("api_keys", "id", "cce_app", "SELECT", False),
+    ("api_keys", "id", "cce_auth", "SELECT", False),
     ("api_keys", "label", "cce_app", "SELECT", False),
+    ("api_keys", "pepper_version", "cce_auth", "SELECT", False),
     ("api_keys", "revoked_at", "cce_app", "SELECT", False),
+    ("api_keys", "revoked_at", "cce_auth", "SELECT", False),
     ("api_keys", "scopes", "cce_app", "SELECT", False),
+    ("api_keys", "scopes", "cce_auth", "SELECT", False),
+    ("api_keys", "secret_digest", "cce_auth", "SELECT", False),
     ("api_keys", "tenant_id", "cce_app", "SELECT", False),
+    ("api_keys", "tenant_id", "cce_auth", "SELECT", False),
     ("tenants", None, "cce_app", "SELECT", False),
+    ("tenants", "id", "cce_auth", "SELECT", False),
+    ("tenants", "status", "cce_auth", "SELECT", False),
     ("tenants", "default_currency", "cce_app", "UPDATE", False),
     ("tenants", "locale", "cce_app", "UPDATE", False),
     ("tenants", "name", "cce_app", "UPDATE", False),
@@ -78,7 +88,7 @@ EXPECTED_ACL = [
 ]
 
 
-async def test_0002_grants_the_runtime_exactly_the_minimum_and_nothing_to_anyone_else(
+async def test_0002_and_0003_grant_exactly_the_minimum_and_nothing_to_anyone_else(
     app_connection: AsyncConnection,
 ) -> None:
     rows = (await app_connection.execute(text(ACL_ENTRIES))).all()
@@ -97,17 +107,19 @@ async def test_the_runtime_has_no_privilege_of_any_kind_on_the_secret_columns(
                 select has_column_privilege('cce_app', 'cce.api_keys', :column,
                                             'SELECT, INSERT, UPDATE, REFERENCES'),
                        has_column_privilege('cce_auth', 'cce.api_keys', :column,
-                                            'SELECT, INSERT, UPDATE, REFERENCES')
+                                            'INSERT, UPDATE, REFERENCES'),
+                       has_column_privilege('cce_auth', 'cce.api_keys', :column, 'SELECT')
             """),
             {"column": column},
         )
     ).one()
     await app_connection.rollback()
 
-    assert tuple(row) == (False, False)  # cce_auth só ganha o digest no ticket 06
+    # O runtime não tem nada; cce_auth só lê (o definer precisa do digest e da versão do pepper).
+    assert tuple(row) == (False, False, True)
 
 
-async def test_cce_auth_has_no_table_or_column_privilege_yet(
+async def test_cce_auth_has_no_table_level_privilege_and_no_write_of_any_kind(
     app_connection: AsyncConnection,
 ) -> None:
     granted = []
@@ -123,7 +135,22 @@ async def test_cce_auth_has_no_table_or_column_privilege_yet(
                 granted.append(f"{table}:{privilege}")
     await app_connection.rollback()
 
-    assert granted == []
+    assert granted == []  # só colunas (has_table_privilege exige a tabela inteira)
+
+
+async def test_the_runtime_reads_the_migration_version_and_cce_auth_does_not(
+    app_connection: AsyncConnection,
+) -> None:
+    read = await sql_outcome(app_connection, "SELECT version_num FROM cce.alembic_version")
+    auth = (
+        await app_connection.execute(
+            text("select has_any_column_privilege('cce_auth', 'cce.alembic_version', 'SELECT')")
+        )
+    ).scalar_one()
+    await app_connection.rollback()
+
+    assert read == "ok"  # readiness (ticket 07): é o único acesso do runtime a essa tabela
+    assert auth is False
 
 
 async def test_public_has_no_privilege_on_the_tables(app_connection: AsyncConnection) -> None:
@@ -147,7 +174,9 @@ async def test_public_has_no_privilege_on_the_tables(app_connection: AsyncConnec
 @pytest.mark.parametrize(
     "statement",
     [
-        "SELECT count(*) FROM cce.alembic_version",
+        "INSERT INTO cce.alembic_version (version_num) VALUES ('x')",
+        "UPDATE cce.alembic_version SET version_num = 'x'",
+        "DELETE FROM cce.alembic_version",
         "SELECT secret_digest FROM cce.api_keys",
         "SELECT pepper_version FROM cce.api_keys",
         "INSERT INTO cce.tenants (id, name, slug) VALUES (gen_random_uuid(), 'x', 'x')",

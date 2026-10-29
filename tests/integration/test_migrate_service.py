@@ -44,5 +44,5 @@ async def test_migrate_service_applies_0001_from_scratch_and_can_run_again(
         require(result.returncode == 0, "the migrate service did not complete successfully")
         assert_no_leaks(result.stdout + result.stderr, forbidden, "the migrate service output")
 
-    # O serviço aplica a cadeia inteira (o head é 0002); outros testes citam este nome.
-    assert await revisions(migrator_connection) == ["0002"]
+    # O serviço aplica a cadeia inteira (o head é 0003); outros testes citam este nome.
+    assert await revisions(migrator_connection) == ["0003"]

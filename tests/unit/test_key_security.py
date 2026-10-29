@@ -19,11 +19,12 @@ import re
 import secrets
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 from integration.support import assert_no_leaks, require
+from key_support import call_or_fail, error_of, must_parse
 from pydantic import SecretStr
 
 from cce.integrations.api_keys.service import IssuedKey, issue_key_material
@@ -48,24 +49,6 @@ DOMAIN = b"cce-api-key:v1\0"
 KEY_PATTERN = re.compile(r"cce_(dev|tst|stg|prd)_[0-9a-f]{32}_[A-Za-z0-9_-]{43}")
 
 
-def call_or_fail[T](call: Callable[[], T], what: str) -> T:
-    """Executa `call`; qualquer exceção vira uma falha de texto fixo (só o nome do tipo).
-
-    Uma exceção inesperada (de qualquer tipo, com ou sem a chave na mensagem) nunca sobe do teste:
-    ela levaria a chave nos locais do traceback.
-    """
-    result: T | None = None
-    failure = ""
-    done = False
-    try:
-        result = call()
-        done = True
-    except Exception as error:
-        failure = type(error).__name__
-    require(done, f"{what} raised an unexpected {failure}")
-    return cast(T, result)
-
-
 def fresh_pepper() -> bytes:
     return call_or_fail(lambda: secrets.token_bytes(32), "token_bytes")
 
@@ -82,13 +65,6 @@ def key_parts(raw_key: str) -> tuple[str, str, str]:
 
 def generate(key_id: UUID, environment: Environment) -> str:
     return call_or_fail(lambda: generate_key(key_id, environment), "generate_key")
-
-
-def must_parse(raw_key: str, environment: Environment) -> ParsedKey:
-    """`parse_key` para uma chave que este módulo acabou de gerar."""
-    parsed = call_or_fail(lambda: parse_key(raw_key, environment), "parse_key")
-    require(isinstance(parsed, ParsedKey), "parse_key did not return a ParsedKey")
-    return parsed
 
 
 def digest_of(raw_key: str, pepper: bytes) -> bytes:
@@ -115,26 +91,6 @@ def issue(
     )
     require(isinstance(issued, IssuedKey), "issue_key_material did not return an IssuedKey")
     return issued
-
-
-def error_of(call: Callable[[], object], expected: type[Exception], what: str) -> Exception:
-    """O erro do tipo esperado levantado por `call`.
-
-    Falha com texto fixo se nada for levantado ou se for levantado outro tipo (a detecção do tipo
-    incorreto continua valendo), sem propagar a exceção inesperada nem a mensagem dela.
-    """
-    caught: Exception | None = None
-    unexpected = ""
-    try:
-        call()
-    except expected as error:
-        caught = error
-    except Exception as error:
-        unexpected = type(error).__name__
-    got = f"a {unexpected}" if unexpected else "no error"
-    require(caught is not None, f"{what}: expected {expected.__name__}, got {got}")
-    assert caught is not None
-    return caught
 
 
 def key_forbidden(raw_key: str) -> dict[str, str]:

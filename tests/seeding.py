@@ -105,3 +105,50 @@ async def seed_probe_row(engine: AsyncEngine, tenant_id: UUID, value: str) -> UU
             {"id": row_id, "tenant_id": tenant_id, "v": value},
         )
     return row_id
+
+
+# Falha REAL no COMMIT: uma constraint trigger adiada que recusa toda inserção em `api_keys`. Só
+# existe no banco de teste, enquanto a fixture a pede; nunca entra em migration nem em metadata.
+COMMIT_FAILURE_STATEMENTS = (
+    "CREATE OR REPLACE FUNCTION cce_private.commit_failure_probe() RETURNS trigger "
+    "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'commit failure probe'; END $$",
+    "CREATE CONSTRAINT TRIGGER commit_failure_probe AFTER INSERT ON cce.api_keys "
+    "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW "
+    "EXECUTE FUNCTION cce_private.commit_failure_probe()",
+)
+COMMIT_FAILURE_TEARDOWN = (
+    "DROP TRIGGER IF EXISTS commit_failure_probe ON cce.api_keys",
+    "DROP FUNCTION IF EXISTS cce_private.commit_failure_probe()",
+)
+
+
+async def create_commit_failure(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        for statement in COMMIT_FAILURE_TEARDOWN + COMMIT_FAILURE_STATEMENTS:
+            await connection.execute(text(statement))
+
+
+async def drop_commit_failure(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        for statement in COMMIT_FAILURE_TEARDOWN:
+            await connection.execute(text(statement))
+
+
+async def remove_tenants_with_slug_prefix(admin_engine: AsyncEngine, prefix: str) -> None:
+    """Limpeza de Tenants criados pela CLI ou pelo bootstrap sob teste (superusuário descartável).
+
+    O id nasce dentro do processo testado, então a limpeza procura pelo slug. O LIKE usa o prefixo
+    escapado; só roda no banco descartável.
+    """
+    pattern = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    async with admin_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "DELETE FROM cce.api_keys WHERE tenant_id IN "
+                "(SELECT id FROM cce.tenants WHERE slug LIKE :pattern)"
+            ),
+            {"pattern": pattern},
+        )
+        await connection.execute(
+            text("DELETE FROM cce.tenants WHERE slug LIKE :pattern"), {"pattern": pattern}
+        )

@@ -4,7 +4,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 import sensitive_plugin
@@ -15,16 +15,20 @@ from db_support import (
     assert_disposable_database,
     run_alembic,
 )
+from integration.support import compose_env_file, read_dotenv, require
 from seeding import (
     SeededTenant,
+    create_commit_failure,
     create_probe,
+    drop_commit_failure,
     drop_probe,
     remove_tenant,
+    remove_tenants_with_slug_prefix,
     seed_key,
     seed_tenant,
 )
 from sensitive_plugin import pytest_runtest_makereport
-from sqlalchemy.engine import URL
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
@@ -35,9 +39,11 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from cce.shared.config import (
+    AdminSettings,
     ConfigurationError,
     MigrationSettings,
     Settings,
+    load_admin_settings,
     load_migration_settings,
     load_settings,
 )
@@ -88,6 +94,19 @@ def _guarded_migration_settings() -> MigrationSettings:
         settings = load_migration_settings()
     except ConfigurationError as error:
         pytest.fail(f"cannot load migration settings ({ENV_FILE_HINT}): {error}", pytrace=False)
+    assert_disposable_database(
+        settings.env, settings.migrator_database_url.get_secret_value(), "migrator"
+    )
+    return settings
+
+
+@pytest.fixture
+def admin_settings() -> AdminSettings:
+    """Settings da CLI administrativa, com o mesmo guard do banco descartável."""
+    try:
+        settings = load_admin_settings()
+    except ConfigurationError as error:
+        pytest.fail(f"cannot load admin settings ({ENV_FILE_HINT}): {error}", pytrace=False)
     assert_disposable_database(
         settings.env, settings.migrator_database_url.get_secret_value(), "migrator"
     )
@@ -149,6 +168,54 @@ async def migrator_engine(
         yield engine
     finally:
         await engine.dispose()
+
+
+@pytest.fixture
+async def admin_engine(migrator_settings: MigrationSettings) -> AsyncIterator[AsyncEngine]:
+    """Superusuário do banco descartável: defeitos de role, limpeza e conferências que a RLS
+    esconderia do dono. Nunca é usado por código de produção.
+    """
+    password = read_dotenv(compose_env_file()).get("CCE_POSTGRES_ADMIN_PASSWORD", "")
+    require(password != "", "CCE_POSTGRES_ADMIN_PASSWORD is not set in the test dotenv")
+    url = make_url(migrator_settings.migrator_database_url.get_secret_value()).set(
+        username="postgres", password=password
+    )
+    assert_disposable_database(migrator_settings.env, url, "admin")
+    engine = _engine(url)
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+async def admin_connection(admin_engine: AsyncEngine) -> AsyncIterator[AsyncConnection]:
+    """Conexão do superusuário do banco descartável (defeitos sempre desfeitos)."""
+    async with admin_engine.connect() as connection:
+        yield connection
+        await connection.rollback()
+
+
+@pytest.fixture
+async def commit_failure(migrator_engine: AsyncEngine) -> AsyncIterator[None]:
+    """Faz todo COMMIT que inseriu uma chave falhar no PostgreSQL (removido no fim)."""
+    await create_commit_failure(migrator_engine)
+    try:
+        yield
+    finally:
+        await drop_commit_failure(migrator_engine)
+
+
+@pytest.fixture
+async def tenant_slug_prefix(
+    admin_engine: AsyncEngine, migrated_database: None
+) -> AsyncIterator[str]:
+    """Prefixo único de slug para Tenants criados pelo código sob teste; limpos no fim."""
+    prefix = f"t-{uuid4().hex[:12]}"
+    try:
+        yield prefix
+    finally:
+        await remove_tenants_with_slug_prefix(admin_engine, prefix)
 
 
 @pytest.fixture

@@ -10,22 +10,21 @@ As mensagens do verificador são texto fixo com nomes de objetos; nenhum DSN ou 
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
 import subprocess
 import sys
-from collections.abc import AsyncIterator
 from types import ModuleType
 
 import pytest
-from db_support import ROOT, alembic_environment, assert_disposable_database, sensitive_components
+from db_support import ROOT, alembic_environment, sensitive_components
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cce.shared.config import MigrationSettings
-from integration.support import assert_no_leaks, compose_env_file, read_dotenv, require
+from integration.support import assert_no_leaks, require
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("migrated_database")]
 
@@ -43,26 +42,6 @@ def load_script() -> ModuleType:
 @pytest.fixture
 def check_schema() -> ModuleType:
     return load_script()
-
-
-@pytest.fixture
-async def admin_connection(migrator_settings: MigrationSettings) -> AsyncIterator[AsyncConnection]:
-    """Superusuário do banco descartável (só para introduzir defeitos de role, sempre desfeitos)."""
-    password = read_dotenv(compose_env_file()).get("CCE_POSTGRES_ADMIN_PASSWORD", "")
-    require(password != "", "CCE_POSTGRES_ADMIN_PASSWORD is not set in the test dotenv")
-    url = make_url(migrator_settings.migrator_database_url.get_secret_value()).set(
-        username="postgres", password=password
-    )
-    assert_disposable_database(migrator_settings.env, url, "admin")
-    engine: AsyncEngine = create_async_engine(
-        url, poolclass=NullPool, hide_parameters=True, connect_args={"timeout": 10}
-    )
-    try:
-        async with engine.connect() as connection:
-            yield connection
-            await connection.rollback()
-    finally:
-        await engine.dispose()
 
 
 async def problems_after(
@@ -111,9 +90,21 @@ TABLE_DEFECTS = {
         "DROP POLICY tenant_isolation ON cce.api_keys",
         "cce.api_keys: policy tenant_isolation is missing",
     ),
+    "tenants-auth-policy-dropped": (
+        "DROP POLICY auth_lookup ON cce.tenants",
+        "cce.tenants: policy auth_lookup is missing",
+    ),
+    "api-keys-auth-policy-dropped": (
+        "DROP POLICY auth_lookup ON cce.api_keys",
+        "cce.api_keys: policy auth_lookup is missing",
+    ),
     "extra-open-policy": (
         "CREATE POLICY open ON cce.tenants USING (true)",
         "cce.tenants: unexpected policy open",
+    ),
+    "extra-open-policy-for-the-runtime": (
+        "CREATE POLICY runtime_read ON cce.api_keys FOR SELECT TO cce_app USING (true)",
+        "cce.api_keys: unexpected policy runtime_read",
     ),
     "unexpected-table": (
         "CREATE TABLE cce.rls_probe (id integer)",
@@ -177,6 +168,29 @@ async def test_it_reports_a_policy_that_differs_from_the_expected_definition(
     assert "cce.tenants: policy tenant_isolation differs from the expected definition" in found
 
 
+AUTH_POLICY_DEFECTS = {
+    "narrower": "FOR SELECT TO cce_auth USING (status = 'active')",
+    "also-for-the-runtime": "FOR SELECT TO cce_auth, cce_app USING (true)",
+    "for-all": "FOR ALL TO cce_auth USING (true) WITH CHECK (true)",
+    "for-public": "FOR SELECT USING (true)",
+    "for-update": "FOR UPDATE TO cce_auth USING (true)",
+}
+
+
+@pytest.mark.parametrize("body", list(AUTH_POLICY_DEFECTS.values()), ids=list(AUTH_POLICY_DEFECTS))
+async def test_it_reports_an_auth_lookup_policy_that_differs_from_the_expected_definition(
+    check_schema: ModuleType, migrator_connection: AsyncConnection, body: str
+) -> None:
+    found = await problems_after(
+        check_schema,
+        migrator_connection,
+        "DROP POLICY auth_lookup ON cce.tenants",
+        f"CREATE POLICY auth_lookup ON cce.tenants {body}",
+    )
+
+    assert "cce.tenants: policy auth_lookup differs from the expected definition" in found
+
+
 GRANT_DEFECTS = {
     "digest-column": (
         "GRANT SELECT (secret_digest) ON cce.api_keys TO cce_app",
@@ -218,9 +232,45 @@ GRANT_DEFECTS = {
         "GRANT SELECT ON cce.tenants TO cce_auth",
         "unexpected grant: cce_auth SELECT on cce.tenants",
     ),
-    "alembic-version": (
-        "GRANT SELECT ON cce.alembic_version TO cce_app",
-        "unexpected grant: cce_app SELECT on cce.alembic_version",
+    "alembic-version-write": (
+        "GRANT INSERT ON cce.alembic_version TO cce_app",
+        "unexpected grant: cce_app INSERT on cce.alembic_version",
+    ),
+    "alembic-version-public": (
+        "GRANT SELECT ON cce.alembic_version TO PUBLIC",
+        "unexpected grant: PUBLIC SELECT on cce.alembic_version",
+    ),
+    "alembic-version-auth": (
+        "GRANT SELECT ON cce.alembic_version TO cce_auth",
+        "unexpected grant: cce_auth SELECT on cce.alembic_version",
+    ),
+    "missing-alembic-version-select": (
+        "REVOKE SELECT ON cce.alembic_version FROM cce_app",
+        "missing grant: cce_app SELECT on cce.alembic_version",
+    ),
+    "auth-extra-tenant-column": (
+        "GRANT SELECT (name) ON cce.tenants TO cce_auth",
+        "unexpected grant: cce_auth SELECT on cce.tenants.name",
+    ),
+    "auth-extra-key-column": (
+        "GRANT SELECT (label) ON cce.api_keys TO cce_auth",
+        "unexpected grant: cce_auth SELECT on cce.api_keys.label",
+    ),
+    "auth-update": (
+        "GRANT UPDATE (status) ON cce.tenants TO cce_auth",
+        "unexpected grant: cce_auth UPDATE on cce.tenants.status",
+    ),
+    "auth-grant-option": (
+        "GRANT SELECT (id) ON cce.tenants TO cce_auth WITH GRANT OPTION",
+        "unexpected grant option: cce_auth SELECT on cce.tenants.id",
+    ),
+    "missing-auth-digest": (
+        "REVOKE SELECT (secret_digest) ON cce.api_keys FROM cce_auth",
+        "missing grant: cce_auth SELECT on cce.api_keys.secret_digest",
+    ),
+    "missing-auth-status": (
+        "REVOKE SELECT (status) ON cce.tenants FROM cce_auth",
+        "missing grant: cce_auth SELECT on cce.tenants.status",
     ),
     "grant-option": (
         "GRANT SELECT ON cce.tenants TO cce_app WITH GRANT OPTION",
@@ -301,6 +351,134 @@ async def test_a_function_nobody_was_granted_is_not_a_problem(
     )
 
     assert found == []
+
+
+LOOKUP = "cce_private.lookup_api_key(uuid)"
+LOOKUP_ID = "cce_private.lookup_api_key(p_key_id uuid)"
+LOOKUP_TABLE = (
+    "RETURNS TABLE (key_id uuid, tenant_id uuid, secret_digest bytea, "
+    "pepper_version smallint, scopes text[])"
+)
+SAME_SHAPE_OTHER_BODY = (
+    f"CREATE OR REPLACE FUNCTION {LOOKUP.replace('(uuid)', '(p_key_id uuid)')} {LOOKUP_TABLE} "
+    "LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp "
+    "SET row_security = on AS $f$ SELECT k.id, k.tenant_id, k.secret_digest, k.pepper_version, "
+    "k.scopes FROM cce.api_keys AS k WHERE k.id = p_key_id $f$"
+)
+LOOKUP_DEFECTS = {
+    "search-path-widened": (
+        f"ALTER FUNCTION {LOOKUP} SET search_path = cce, public",
+        f"function {LOOKUP_ID}: search_path is not pg_catalog, pg_temp",
+    ),
+    "search-path-without-pg-temp": (
+        f"ALTER FUNCTION {LOOKUP} SET search_path = pg_catalog",
+        f"function {LOOKUP_ID}: search_path is not pg_catalog, pg_temp",
+    ),
+    "search-path-reset": (
+        f"ALTER FUNCTION {LOOKUP} RESET search_path",
+        f"function {LOOKUP_ID}: search_path is not pg_catalog, pg_temp",
+    ),
+    "row-security-off": (
+        f"ALTER FUNCTION {LOOKUP} SET row_security = off",
+        f"function {LOOKUP_ID}: row_security is not on",
+    ),
+    "row-security-reset": (
+        f"ALTER FUNCTION {LOOKUP} RESET row_security",
+        f"function {LOOKUP_ID}: row_security is not on",
+    ),
+    "invoker": (
+        f"ALTER FUNCTION {LOOKUP} SECURITY INVOKER",
+        f"function {LOOKUP_ID}: is not SECURITY DEFINER",
+    ),
+    "volatile": (
+        f"ALTER FUNCTION {LOOKUP} VOLATILE",
+        f"function {LOOKUP_ID}: volatility differs from the expected one",
+    ),
+    "leakproof": (
+        f"ALTER FUNCTION {LOOKUP} LEAKPROOF",
+        f"function {LOOKUP_ID}: is LEAKPROOF",
+    ),
+    "owned-by-migrator": (
+        f"ALTER FUNCTION {LOOKUP} OWNER TO cce_migrator",
+        f"function {LOOKUP_ID}: owned by cce_migrator instead of cce_auth",
+    ),
+    "owned-by-app": (
+        f"ALTER FUNCTION {LOOKUP} OWNER TO cce_app",
+        f"function {LOOKUP_ID}: owned by cce_app instead of cce_auth",
+    ),
+    "execute-public": (
+        f"GRANT EXECUTE ON FUNCTION {LOOKUP} TO PUBLIC",
+        f"unexpected EXECUTE: PUBLIC on {LOOKUP_ID}",
+    ),
+    "execute-migrator": (
+        f"GRANT EXECUTE ON FUNCTION {LOOKUP} TO cce_migrator",
+        f"unexpected EXECUTE: cce_migrator on {LOOKUP_ID}",
+    ),
+    "execute-revoked-from-app": (
+        f"REVOKE EXECUTE ON FUNCTION {LOOKUP} FROM cce_app",
+        f"missing EXECUTE: cce_app on {LOOKUP_ID}",
+    ),
+    "execute-grant-option": (
+        f"GRANT EXECUTE ON FUNCTION {LOOKUP} TO cce_app WITH GRANT OPTION",
+        f"unexpected grant option: cce_app EXECUTE on {LOOKUP_ID}",
+    ),
+    "dropped": (f"DROP FUNCTION {LOOKUP}", f"missing function: {LOOKUP_ID}"),
+    "body-changed": (
+        SAME_SHAPE_OTHER_BODY,
+        f"function {LOOKUP_ID}: definition differs from the expected one",
+    ),
+    "result-widened": (
+        f"DROP FUNCTION {LOOKUP}; CREATE FUNCTION cce_private.lookup_api_key(p_key_id uuid) "
+        "RETURNS TABLE (key_id uuid) LANGUAGE sql STABLE SECURITY DEFINER "
+        "SET search_path = pg_catalog, pg_temp SET row_security = on "
+        "AS $f$ SELECT id FROM cce.api_keys $f$",
+        f"function {LOOKUP_ID}: result type differs from the expected one",
+    ),
+    "second-definer-overload": (
+        "CREATE FUNCTION cce_private.lookup_api_key(p_key_id uuid, p_tenant uuid) "
+        f"{LOOKUP_TABLE} LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp "
+        "AS $f$ SELECT NULL::uuid, NULL::uuid, NULL::bytea, NULL::smallint, NULL::text[] $f$",
+        "function cce_private.lookup_api_key(p_key_id uuid, p_tenant uuid): "
+        "unexpected SECURITY DEFINER",
+    ),
+    "other-definer": (
+        "CREATE FUNCTION cce_private.shadow() RETURNS integer LANGUAGE sql SECURITY DEFINER "
+        "AS 'select 1'",
+        "function cce_private.shadow(): unexpected SECURITY DEFINER",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("statement", "expected"), list(LOOKUP_DEFECTS.values()), ids=list(LOOKUP_DEFECTS)
+)
+async def test_it_reports_a_lookup_function_that_differs_from_the_expected_one(
+    check_schema: ModuleType, admin_connection: AsyncConnection, statement: str, expected: str
+) -> None:
+    found = await problems_after(check_schema, admin_connection, *statement.split("; "))
+
+    assert expected in found
+
+
+def test_the_pinned_source_hash_is_the_one_of_the_migration(check_schema: ModuleType) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "auth_lookup_migration",
+        ROOT / "infrastructure" / "migrations" / "versions" / "0003_auth_lookup.py",
+    )
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    pinned = check_schema.EXPECTED_FUNCTIONS[LOOKUP_ID]["source_md5"]
+
+    assert hashlib.md5(migration.LOOKUP_BODY.encode(), usedforsecurity=False).hexdigest() == pinned
+
+
+def test_the_expected_runtime_functions_are_the_expected_functions(
+    check_schema: ModuleType,
+) -> None:
+    assert set(check_schema.EXPECTED_RUNTIME_FUNCTIONS) == {LOOKUP_ID}
+    assert set(check_schema.EXPECTED_FUNCTIONS) == {LOOKUP_ID}
 
 
 # --- defeitos de role (pelo superusuário do banco descartável) -------------------------------
