@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** in-review
+**Status:** blocked
 
 **Plano:** Tarefa 3 e seções 8 e 9. **Vocabulário:** Tenant (`CONTEXT.md`).
 
@@ -40,3 +40,15 @@ PR #5, head `6d9c2cb`. Os três achados da rodada 1 foram corrigidos e confirmad
    Correção sugerida: antes de qualquer etapa mutante do teste do serviço, renderizar de forma controlada a configuração efetiva do Compose (capturando a saída, nunca imprimindo valores), exigir `CCE_ENV=test` e aplicar a guarda ao DSN efetivo do `migrate`, com coerência com o banco validado pelas fixtures; ou montar explicitamente o ambiente de teste validado para a execução do Compose, com as variáveis de interpolação pertinentes. Preservar o uso legítimo de `upgrade` local pelo Compose fora dos testes (não proibir `upgrade` local no `env.py`). Acrescentar regressão com dotenv `local`/`cce` e overrides `test`/`cce_test`, provando recusa antes de build, run e `downgrade`, sem segredos em argv ou saída. Não resolver removendo a filtragem de `CCE_*` de forma indiscriminada.
 
 Limites declarados pelo Revisor: migrations (8 passed) e integração (162 passed, 1 failed, 6 errors) rodaram; os sete testes de imagem e `migrate` falharam só por escrita proibida em `~/.docker/buildx/activity`, e ele não os reproduziu nem escalonou. Esses sete vêm do Regente (suíte completa: 169 passed). Unit (411), Ruff, mypy estrito e lock passaram. O ticket volta a `in-progress`. Esta foi a rodada 2 de 3.
+
+### 2026-10-28 — Parecer do Revisor (Lupa), rodada 3: mudanças necessárias → ticket `blocked`
+
+PR #5, head `d23de22`. O cenário da rodada 2 (dotenv `local`/`cce` com overrides `test`/`cce_test`) foi corrigido: os dois testes de integração novos reproduzem o cenário e exigem a recusa no setup, antes de build, `downgrade`, `run` e `exec`, sem segredos na saída; a fixture precede as conexões e o corpo dos testes. Contraprova em memória: com `compose_target_problems` sem acusar divergências, 11 regressões novas falham. Os demais caminhos de mudança de estado (fixtures SQL, `run_alembic`, `test_services`, `test_image`, o `exec` de `test_failure_output`) foram examinados e estão cobertos; o comando Compose fixa `-p cce-test` e `-f`, então `COMPOSE_PROJECT_NAME` e override automático não os substituem. Nada mudou em grants, owner, modelos, engine, `env.py` ou `config.py`.
+
+Resta um problema:
+1. **[importante]** `tests/db_support.py:115-125` e `:131-137`: a guarda não valida o endpoint do DSN do `migrate`. Ela extrai só `.database` do DSN do `migrate` e o compara ao banco validado; a verificação de host e porta considera apenas o DSN validado e a publicação de `ports` do serviço `postgres`. Um `migrate` que conecta a outro servidor, ou a outra porta interna, passa na checagem de que mira o mesmo banco. Reprodução sem credenciais reais, no config sintético de `tests/unit/test_compose_target_guard.py::rendered()`: `services.migrate.environment.CCE_MIGRATOR_DATABASE_URL` trocado por `postgresql+asyncpg://cce_migrator@other-db.invalid:5432/cce_test`, com o `postgres` publicado em `127.0.0.1:5432`, faz `compose_target_problems` devolver `[]` (idem com `postgres:6543/cce_test`). Pelo caminho real, com uma cópia do `docker-compose.yml` selecionada por `CCE_TEST_COMPOSE_FILE` e só host/porta do DSN do `migrate` alterados, `assert_compose_targets_validated_database` aprovou os dois destinos. O `upgrade` posterior via CLI é permitido pelo `env.py`, então a guarda não impede escrita em outra instância que tenha banco de mesmo nome. Não é pedido endurecer o prefixo `cce_test*`.
+   Correção sugerida, para decisão da pessoa: na topologia local suportada, exigir explicitamente o endpoint interno do serviço `postgres` (host `postgres`, porta `5432`) no DSN do `migrate`, além de validar a publicação que leva o DSN externo ao mesmo serviço; recusar ou redesenhar explicitamente topologias alternativas, em vez de inferir identidade só pelo nome do banco. Regressões para host e porta internos divergentes, via `CCE_TEST_COMPOSE_FILE`, provando recusa no setup antes de build, `downgrade`, `run` e `exec`, sem DSNs na saída. Não é necessário bloquear o `upgrade` local fora dos testes.
+
+Limites declarados pelo Revisor: unit 431, migrations 8 e integração 164 passed (1 failed e 6 errors nos sete testes de imagem e `migrate`, por escrita proibida em `~/.docker/buildx/activity`; ele não escalonou). Esses sete vêm do Regente: 171 passed na suíte completa.
+
+Estado: três rodadas sem aprovação. O ticket vai para `blocked` à espera da decisão da pessoa. Avaliação do Regente: é uma lacuna só do harness de teste (nenhum código de produção), no cenário de um `docker-compose.yml` adulterado para apontar o `migrate` a outro servidor; a correção sugerida é pequena e localizada em `tests/`.
