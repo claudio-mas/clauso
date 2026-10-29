@@ -19,7 +19,7 @@ alias cce-admin='uv run --project apps/api --locked cce-admin'
 cce-admin tenant create --name "Empresa A" --slug empresa-a
 ```
 
-Cria o Tenant (`active`) e uma chave inicial com os scopes `tenant:read` e `tenant:write`, **na mesma transação**; a chave só é impressa depois do commit. Se o comando falhar, não há Tenant, chave nem saída. Opções: `--plan`, `--currency` (`BRL`, `USD`, `EUR`), `--timezone` e `--locale` (`pt-BR`, `en-US`).
+Cria o Tenant (`active`) e uma chave inicial com os scopes `tenant:read` e `tenant:write`, **na mesma transação**; a chave só é impressa depois do commit. Se o commit falhar, a transação é desfeita e a chave não é impressa. A ausência de saída, porém, não prova que nada foi gravado: se a conexão cair depois de o servidor confirmar o commit, ou a saída falhar depois dele, o Tenant e a chave podem existir sem que o JSON tenha chegado (ver "Se algo der errado"). Opções: `--plan`, `--currency` (`BRL`, `USD`, `EUR`), `--timezone` e `--locale` (`pt-BR`, `en-US`).
 
 Saída (stdout, um objeto JSON; os valores aqui são ilustrativos):
 
@@ -68,5 +68,5 @@ Os erros saem em stderr como `{"error": "...", "kind": "..."}`. Um valor mal dig
 ## Se algo der errado
 
 - **A chave foi impressa e se perdeu:** não há como recuperá-la. Emita outra e revogue a antiga.
-- **Dúvida se o comando criou algo:** só há Tenant e chave se o JSON saiu em stdout com código 0. Confira pelo `tenant create` repetido: um slug em uso responde com código 1.
-- **Código 3 em `tenant create`:** nada foi gravado. Verifique a conectividade e o `CCE_MIGRATOR_DATABASE_URL`, e repita.
+- **Dúvida se o comando criou algo (sem JSON, ou com código 3):** não presuma que nada foi gravado. A conexão pode cair depois de o servidor confirmar o commit, e a saída pode falhar depois dele; nesses casos o Tenant e a chave existem, mas a chave nunca foi vista. Confira pelo slug: repetir `tenant create` com o mesmo slug responde com código 1 se o Tenant já existe. Se existe e a chave inicial não chegou, emita uma nova com `api-key issue` e revogue a emissão cuja entrega ficou incerta (`api-key revoke`, com o `key_<id>` dela, se você o tiver; senão revogue as chaves do Tenant que o Host não usa).
+- **Código 3 em `tenant create`:** verifique a conectividade e o `CCE_MIGRATOR_DATABASE_URL` e confira o slug como acima antes de repetir. O código 3 não garante que nada foi gravado.

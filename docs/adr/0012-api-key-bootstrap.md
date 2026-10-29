@@ -60,7 +60,7 @@ A migration 0003 cria `cce_private.lookup_api_key(p_key_id uuid)`:
 
 - `tenant create`, `tenant suspend`, `tenant activate`, `api-key issue` e `api-key revoke`.
 - Toda operação abre `tenant_session` com o Tenant alvo: o dono também está sujeito à RLS (`FORCE`). Para criar um Tenant, o UUID nasce antes do INSERT e vira o contexto.
-- **O Tenant e a chave inicial nascem na mesma transação**, e a chave bruta só é impressa depois do commit. Se o commit falha, não há Tenant, chave nem saída. `tenant create` emite a chave inicial com todos os scopes (`tenant:read`, `tenant:write`); `api-key issue` aceita só scopes conhecidos, ao menos um.
+- **O Tenant e a chave inicial nascem na mesma transação**, e a chave bruta só é impressa depois do commit. Se o commit falha, a transação é desfeita e a chave não é impressa. Isso não garante o inverso: se a conexão cair depois de o servidor confirmar o commit, ou a saída falhar depois dele, o Tenant e a chave podem existir sem que a chave tenha sido mostrada; o runbook manda conferir o slug e, se preciso, emitir outra chave e revogar a de entrega incerta. `tenant create` emite a chave inicial com todos os scopes (`tenant:read`, `tenant:write`); `api-key issue` aceita só scopes conhecidos, ao menos um.
 - Revogar é idempotente (repetir é sucesso e não move o instante), e a chave de outro Tenant é recusada e não é alterada. Suspender e revogar não apagam registros.
 - Saída: um objeto JSON em stdout; erros como um objeto JSON com texto fixo em stderr (nunca DSN, mensagem de driver, traceback ou o valor digitado). Códigos: 0 sucesso, 1 operação recusada, 2 uso ou configuração inválidos, 3 banco indisponível ou falha inesperada. A CLI não é uma forma de autenticação HTTP.
 
