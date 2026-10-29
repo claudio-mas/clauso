@@ -17,6 +17,9 @@ from pathlib import Path
 
 import pytest
 from db_support import ROOT
+from integration.support import require
+
+pytestmark = pytest.mark.sensitive
 
 PLUGIN = textwrap.dedent(
     """
@@ -229,10 +232,11 @@ def test_the_control_run_passes_and_records_the_sensitive_values(tmp_path: Path)
     result, recorded = run_key_tests(tmp_path, "")
 
     if result.returncode != 0:
-        pytest.fail("the key tests fail without any injected defect")
-    assert len(recorded) > 500  # chaves, segredos, digests e peppers de verdade
+        pytest.fail("the key tests fail without any injected defect", pytrace=False)
+    # chaves, segredos, digests e peppers de verdade
+    require(len(recorded) > 500, "the control run recorded too few sensitive values")
     if leaked_labels(result.stdout + result.stderr, recorded):
-        pytest.fail("a passing run printed a sensitive value")
+        pytest.fail("a passing run printed a sensitive value", pytrace=False)
 
 
 @pytest.mark.parametrize("defect", DEFECTS)
@@ -244,11 +248,15 @@ def test_a_defect_is_reported_without_printing_any_key_secret_digest_or_pepper(
 
     leaks = leaked_labels(output, recorded)
     if leaks:
-        pytest.fail(f"pytest printed {leaks} sensitive value(s) while reporting the defect")
+        pytest.fail(
+            f"pytest printed {leaks} sensitive value(s) while reporting the defect", pytrace=False
+        )
     if result.returncode == 0 or " failed" not in output:
-        pytest.fail("the injected defect was not detected by the key tests")
+        pytest.fail("the injected defect was not detected by the key tests", pytrace=False)
     if len(recorded) < 100:
-        pytest.fail("the plugin recorded too few values for the scan to mean anything")
+        pytest.fail(
+            "the plugin recorded too few values for the scan to mean anything", pytrace=False
+        )
 
 
 # --- testes sintéticos dos padrões de falha -------------------------------------------------
@@ -363,7 +371,7 @@ def run_synthetic(tmp_path: Path, name: str, token: str, digest: str) -> str:
         env=environment,
     )
     if result.returncode == 0:
-        pytest.fail("the synthetic defect was not detected")
+        pytest.fail("the synthetic defect was not detected", pytrace=False)
     return result.stdout + result.stderr
 
 
@@ -381,8 +389,8 @@ def test_synthetic_defects_are_reported_without_printing_the_key_or_the_digest(
 
     output = run_synthetic(tmp_path, name, token, digest)
 
-    if token in output or digest in output or token.rsplit("_", 1)[1] in output:
-        pytest.fail("pytest printed the sentinel key, secret or digest")
+    if token in output or digest in output or token.split("_", 3)[3] in output:
+        pytest.fail("pytest printed the sentinel key, secret or digest", pytrace=False)
 
 
 @pytest.mark.parametrize("name", OLD_PATTERNS)
@@ -395,7 +403,10 @@ def test_the_harness_does_see_a_leak_when_the_old_unsafe_patterns_are_used(
     output = run_synthetic(tmp_path, name, token, digest)
 
     if token not in output:
-        pytest.fail("the control did not reproduce the leak, so the scan above proves nothing")
+        pytest.fail(
+            "the control did not reproduce the leak, so the scan above proves nothing",
+            pytrace=False,
+        )
 
 
 # --- defeitos genéricos: qualquer função, qualquer modo -------------------------------------
@@ -430,9 +441,11 @@ def test_a_generic_defect_in_any_primitive_fails_the_tests_without_printing_any_
 
     leaks = leaked_labels(output, recorded)
     if leaks:
-        pytest.fail(f"pytest printed {leaks} sensitive value(s) while reporting the defect")
+        pytest.fail(
+            f"pytest printed {leaks} sensitive value(s) while reporting the defect", pytrace=False
+        )
     if result.returncode == 0:
-        pytest.fail("the generic defect was not detected by the key tests")
+        pytest.fail("the generic defect was not detected by the key tests", pytrace=False)
 
 
 # --- a falha da própria regressão também não vaza -------------------------------------------
@@ -523,9 +536,11 @@ def test_the_regression_does_not_print_the_recorded_values_when_it_fails(
     recorded = recorded_file.read_text().splitlines() if recorded_file.exists() else []
 
     if result.returncode == 0:
-        pytest.fail("the regression was expected to fail against this target")
+        pytest.fail("the regression was expected to fail against this target", pytrace=False)
     if len(recorded) < 1:
-        pytest.fail("no value was recorded, so the scan means nothing")
+        pytest.fail("no value was recorded, so the scan means nothing", pytrace=False)
     leaks = leaked_labels(output, [v for v in recorded if len(v) >= 8])
     if leaks:
-        pytest.fail(f"the regression printed {leaks} recorded value(s) when it failed")
+        pytest.fail(
+            f"the regression printed {leaks} recorded value(s) when it failed", pytrace=False
+        )

@@ -19,7 +19,7 @@ import re
 import secrets
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -39,6 +39,8 @@ from cce.shared.security import (
     verify_digest,
 )
 
+pytestmark = pytest.mark.sensitive
+
 ROOT = Path(__file__).resolve().parents[2]
 ENVIRONMENTS: list[Environment] = ["local", "test", "staging", "production"]
 MARKERS = {"local": "dev", "test": "tst", "staging": "stg", "production": "prd"}
@@ -46,8 +48,26 @@ DOMAIN = b"cce-api-key:v1\0"
 KEY_PATTERN = re.compile(r"cce_(dev|tst|stg|prd)_[0-9a-f]{32}_[A-Za-z0-9_-]{43}")
 
 
+def call_or_fail[T](call: Callable[[], T], what: str) -> T:
+    """Executa `call`; qualquer exceção vira uma falha de texto fixo (só o nome do tipo).
+
+    Uma exceção inesperada (de qualquer tipo, com ou sem a chave na mensagem) nunca sobe do teste:
+    ela levaria a chave nos locais do traceback.
+    """
+    result: T | None = None
+    failure = ""
+    done = False
+    try:
+        result = call()
+        done = True
+    except Exception as error:
+        failure = type(error).__name__
+    require(done, f"{what} raised an unexpected {failure}")
+    return cast(T, result)
+
+
 def fresh_pepper() -> bytes:
-    return secrets.token_bytes(32)
+    return call_or_fail(lambda: secrets.token_bytes(32), "token_bytes")
 
 
 def peppers(*versions: int) -> dict[int, SecretStr]:
@@ -55,38 +75,64 @@ def peppers(*versions: int) -> dict[int, SecretStr]:
 
 
 def key_parts(raw_key: str) -> tuple[str, str, str]:
-    _, marker, key_hex, secret = raw_key.split("_", 3)
-    return marker, key_hex, secret
+    parts = call_or_fail(lambda: raw_key.split("_", 3), "splitting a key")
+    require(len(parts) == 4, "the key does not have four parts")
+    return parts[1], parts[2], parts[3]
+
+
+def generate(key_id: UUID, environment: Environment) -> str:
+    return call_or_fail(lambda: generate_key(key_id, environment), "generate_key")
 
 
 def must_parse(raw_key: str, environment: Environment) -> ParsedKey:
-    """`parse_key` para uma chave que este módulo acabou de gerar.
-
-    Se ela for recusada, o teste falha com texto fixo; sem isto, a exceção inesperada subiria com a
-    chave nos locais do traceback (`--showlocals`).
-    """
-    parsed = None
-    try:
-        parsed = parse_key(raw_key, environment)
-    except InvalidKeyError:
-        pass
-    require(parsed is not None, "a key made by generate_key was rejected by parse_key")
-    assert parsed is not None
+    """`parse_key` para uma chave que este módulo acabou de gerar."""
+    parsed = call_or_fail(lambda: parse_key(raw_key, environment), "parse_key")
+    require(isinstance(parsed, ParsedKey), "parse_key did not return a ParsedKey")
     return parsed
 
 
-def error_of(call: Callable[[], object], expected: type[Exception], what: str) -> Exception:
-    """O erro levantado por `call`, ou falha com texto fixo se nada (ou outra coisa) for levantado.
+def digest_of(raw_key: str, pepper: bytes) -> bytes:
+    return call_or_fail(lambda: digest_key(raw_key, pepper), "digest_key")
 
-    Evita `pytest.raises` em torno de chaves: "DID NOT RAISE" mostraria, com `--showlocals`, os
-    locais do teste, que incluem a chave.
+
+def verify(candidate: Any, stored: Any) -> bool:
+    return call_or_fail(lambda: verify_digest(candidate, stored), "verify_digest")
+
+
+def pepper_of(mapping: dict[int, SecretStr], version: int) -> bytes:
+    return call_or_fail(lambda: pepper_bytes(mapping, version), "pepper_bytes")
+
+
+def issue(
+    environment: Environment,
+    mapping: dict[int, SecretStr],
+    version: int,
+    key_id: UUID | None = None,
+) -> IssuedKey:
+    issued = call_or_fail(
+        lambda: issue_key_material(environment, mapping, version, key_id=key_id),
+        "issue_key_material",
+    )
+    require(isinstance(issued, IssuedKey), "issue_key_material did not return an IssuedKey")
+    return issued
+
+
+def error_of(call: Callable[[], object], expected: type[Exception], what: str) -> Exception:
+    """O erro do tipo esperado levantado por `call`.
+
+    Falha com texto fixo se nada for levantado ou se for levantado outro tipo (a detecção do tipo
+    incorreto continua valendo), sem propagar a exceção inesperada nem a mensagem dela.
     """
     caught: Exception | None = None
+    unexpected = ""
     try:
         call()
     except expected as error:
         caught = error
-    require(caught is not None, f"{what}: the expected error was not raised")
+    except Exception as error:
+        unexpected = type(error).__name__
+    got = f"a {unexpected}" if unexpected else "no error"
+    require(caught is not None, f"{what}: expected {expected.__name__}, got {got}")
     assert caught is not None
     return caught
 
@@ -111,7 +157,7 @@ def key_forbidden(raw_key: str) -> dict[str, str]:
 def test_generated_key_has_the_documented_format(environment: Environment) -> None:
     key_id = uuid4()
 
-    raw = generate_key(key_id, environment)
+    raw = generate(key_id, environment)
 
     require(KEY_PATTERN.fullmatch(raw) is not None, "the key does not match the format")
     marker, key_hex, secret = key_parts(raw)
@@ -133,15 +179,16 @@ def test_the_secret_carries_256_bits_from_the_secrets_module(
 
     monkeypatch.setattr(secrets, "token_urlsafe", spy)
 
-    raw = generate_key(uuid4(), "test")
+    raw = generate(uuid4(), "test")
 
     require(requested == [32], "the secret is not secrets.token_urlsafe(32)")
-    decoded = base64.urlsafe_b64decode(key_parts(raw)[2] + "=")
+    secret = key_parts(raw)[2]
+    decoded = call_or_fail(lambda: base64.urlsafe_b64decode(secret + "="), "decoding the secret")
     require(len(decoded) == 32, "the secret does not decode to 32 bytes")
 
 
 def test_generated_secrets_never_repeat_and_use_only_base64url() -> None:
-    secrets_seen = {key_parts(generate_key(uuid4(), "test"))[2] for _ in range(300)}
+    secrets_seen = {key_parts(generate(uuid4(), "test"))[2] for _ in range(300)}
 
     require(len(secrets_seen) == 300, "a generated secret repeated")
     require(
@@ -167,7 +214,7 @@ def test_a_secret_that_contains_underscores_is_generated_and_parsed_intact(
     monkeypatch.setattr(secrets, "token_urlsafe", lambda nbytes=None: secret)
     key_id = uuid4()
 
-    raw = generate_key(key_id, "production")
+    raw = generate(key_id, "production")
     parsed = must_parse(raw, "production")
 
     require(raw.endswith("_" + secret), "the generated key does not end with the secret")
@@ -179,7 +226,7 @@ def test_random_keys_with_underscores_in_the_secret_round_trip() -> None:
     with_underscore = 0
     for _ in range(400):
         key_id = uuid4()
-        raw = generate_key(key_id, "staging")
+        raw = generate(key_id, "staging")
         with_underscore += "_" in key_parts(raw)[2]
         require(must_parse(raw, "staging").key_id == key_id, "a random key did not round trip")
     # ~48% das chaves: o caso é exercitado de verdade
@@ -190,7 +237,7 @@ def test_random_keys_with_underscores_in_the_secret_round_trip() -> None:
 
 
 def valid_key(environment: Environment = "test") -> str:
-    return generate_key(uuid4(), environment)
+    return generate(uuid4(), environment)
 
 
 def malformed_keys() -> dict[str, Callable[[str], str]]:
@@ -224,9 +271,14 @@ def malformed_keys() -> dict[str, Callable[[str], str]]:
     }
 
 
+def mutated(name: str, key: str) -> str:
+    """Chave `key` corrompida do jeito `name` (um defeito na chave de entrada não vaza daqui)."""
+    return call_or_fail(lambda: malformed_keys()[name](key), f"building the {name} candidate")
+
+
 @pytest.mark.parametrize("name", list(malformed_keys()))
 def test_parse_rejects_everything_that_is_not_a_key_of_this_environment(name: str) -> None:
-    candidate = malformed_keys()[name](valid_key("test"))
+    candidate = mutated(name, valid_key("test"))
 
     error_of(lambda: parse_key(candidate, "test"), InvalidKeyError, "a malformed key")
 
@@ -241,7 +293,7 @@ def test_a_key_of_another_environment_is_rejected(environment: Environment) -> N
 
 
 def test_every_rejection_has_the_same_error_type_and_the_same_message() -> None:
-    candidates: list[Any] = [fn(valid_key("test")) for fn in malformed_keys().values()]
+    candidates: list[Any] = [mutated(name, valid_key("test")) for name in malformed_keys()]
     candidates += [valid_key("production"), b"bytes", None, 12345, object()]
     types: set[type] = set()
     messages: set[str] = set()
@@ -274,7 +326,7 @@ def test_the_error_never_echoes_the_received_key_or_any_part_of_it() -> None:
 
 def test_parse_returns_the_key_id_and_keeps_the_raw_key_secret() -> None:
     key_id = uuid4()
-    raw = generate_key(key_id, "staging")
+    raw = generate(key_id, "staging")
 
     parsed = must_parse(raw, "staging")
 
@@ -290,7 +342,7 @@ def test_parse_returns_the_key_id_and_keeps_the_raw_key_secret() -> None:
 def test_digest_is_hmac_sha256_with_the_pepper_and_the_domain_prefix() -> None:
     raw, pepper = valid_key(), fresh_pepper()
 
-    digest = digest_key(raw, pepper)
+    digest = digest_of(raw, pepper)
 
     expected = hmac.new(pepper, DOMAIN + raw.encode("ascii"), hashlib.sha256).digest()
     require(digest == expected, "the digest is not HMAC-SHA256 over domain + key")
@@ -304,7 +356,7 @@ def test_the_domain_prefix_matters() -> None:
     other_domain = hmac.new(pepper, b"cce-api-key:v2\0" + raw.encode(), hashlib.sha256).digest()
 
     require(
-        digest_key(raw, pepper) not in {without_domain, other_domain},
+        digest_of(raw, pepper) not in {without_domain, other_domain},
         "the digest does not depend on the domain prefix",
     )
 
@@ -312,20 +364,16 @@ def test_the_domain_prefix_matters() -> None:
 def test_digest_is_stable_for_the_same_input() -> None:
     raw, pepper = valid_key(), fresh_pepper()
 
-    require(digest_key(raw, pepper) == digest_key(raw, pepper), "the digest is not stable")
+    require(digest_of(raw, pepper) == digest_of(raw, pepper), "the digest is not stable")
 
 
 def test_digest_changes_with_another_pepper_and_with_another_key() -> None:
     raw, pepper = valid_key(), fresh_pepper()
     flipped = bytes([pepper[0] ^ 1]) + pepper[1:]
 
-    require(
-        digest_key(raw, pepper) != digest_key(raw, fresh_pepper()), "another pepper, same digest"
-    )
-    require(digest_key(raw, pepper) != digest_key(valid_key(), pepper), "another key, same digest")
-    require(
-        digest_key(raw, pepper) != digest_key(raw, flipped), "a flipped pepper bit, same digest"
-    )
+    require(digest_of(raw, pepper) != digest_of(raw, fresh_pepper()), "another pepper, same digest")
+    require(digest_of(raw, pepper) != digest_of(valid_key(), pepper), "another key, same digest")
+    require(digest_of(raw, pepper) != digest_of(raw, flipped), "a flipped pepper bit, same digest")
 
 
 @pytest.mark.parametrize(
@@ -337,19 +385,20 @@ def test_digest_changes_with_another_pepper_and_with_another_key() -> None:
     ],
 )
 def test_a_pepper_shorter_than_32_bytes_is_refused(pepper: bytes) -> None:
-    with pytest.raises(ValueError):
-        digest_key(valid_key(), pepper)
+    raw = valid_key()
+    error_of(lambda: digest_key(raw, pepper), ValueError, "a short pepper")
 
 
 def test_the_pepper_must_be_bytes() -> None:
-    with pytest.raises(TypeError):
-        digest_key(valid_key(), "x" * 32)  # type: ignore[arg-type]
+    raw = valid_key()
+    error_of(lambda: digest_key(raw, "x" * 32), TypeError, "a pepper that is not bytes")  # type: ignore[arg-type]
 
 
 def test_a_non_ascii_key_is_refused_without_echoing_it() -> None:
     raw = valid_key()[:-1] + "é"
 
-    error = error_of(lambda: digest_key(raw, fresh_pepper()), InvalidKeyError, "a non-ascii key")
+    pepper = fresh_pepper()
+    error = error_of(lambda: digest_key(raw, pepper), InvalidKeyError, "a non-ascii key")
     shown = str(error) + repr(error)
 
     assert_no_leaks(shown, key_forbidden(raw), "the digest error")
@@ -359,11 +408,11 @@ def test_peppers_are_selected_by_version() -> None:
     mapping = peppers(1, 2)
 
     require(
-        pepper_bytes(mapping, 1) == base64.b64decode(mapping[1].get_secret_value()),
+        pepper_of(mapping, 1) == base64.b64decode(mapping[1].get_secret_value()),
         "pepper_bytes did not decode version 1",
     )
-    require(pepper_bytes(mapping, 1) != pepper_bytes(mapping, 2), "two versions, same pepper")
-    require(len(pepper_bytes(mapping, 2)) == 32, "the pepper does not have 32 bytes")
+    require(pepper_of(mapping, 1) != pepper_of(mapping, 2), "two versions, same pepper")
+    require(len(pepper_of(mapping, 2)) == 32, "the pepper does not have 32 bytes")
 
 
 @pytest.mark.parametrize("version", [0, 3, -1])
@@ -372,9 +421,10 @@ def test_a_missing_pepper_version_is_an_error_that_does_not_show_any_pepper(
 ) -> None:
     mapping = peppers(1, 2)
 
-    with pytest.raises(UnknownPepperVersion) as excinfo:
-        pepper_bytes(mapping, version)
-    shown = str(excinfo.value) + repr(excinfo.value)
+    error = error_of(
+        lambda: pepper_bytes(mapping, version), UnknownPepperVersion, "a missing pepper version"
+    )
+    shown = str(error) + repr(error)
 
     forbidden = {f"pepper {v}": s.get_secret_value() for v, s in mapping.items()}
     assert_no_leaks(shown, forbidden, "the pepper error")
@@ -384,30 +434,30 @@ def test_a_missing_pepper_version_is_an_error_that_does_not_show_any_pepper(
 
 
 def test_verify_accepts_only_the_identical_digest() -> None:
-    digest = digest_key(valid_key(), fresh_pepper())
+    digest = digest_of(valid_key(), fresh_pepper())
 
-    require(verify_digest(digest, digest) is True, "an identical digest was refused")
+    require(verify(digest, digest) is True, "an identical digest was refused")
     require(
-        verify_digest(bytes(digest), bytes(bytearray(digest))) is True,
+        verify(bytes(digest), bytes(bytearray(digest))) is True,
         "an equal copy of the digest was refused",
     )
     for bit in (0, 100, 255):
         changed = bytearray(digest)
         changed[bit // 8] ^= 1 << (bit % 8)
-        require(verify_digest(bytes(changed), digest) is False, "a changed digest was accepted")
-    other = digest_key(valid_key(), fresh_pepper())
-    require(verify_digest(other, digest) is False, "another digest was accepted")
+        require(verify(bytes(changed), digest) is False, "a changed digest was accepted")
+    other = digest_of(valid_key(), fresh_pepper())
+    require(verify(other, digest) is False, "another digest was accepted")
 
 
 @pytest.mark.parametrize("size", [0, 1, 31, 33, 64])
 def test_verify_rejects_a_digest_of_the_wrong_size_on_either_side(size: int) -> None:
-    digest = digest_key(valid_key(), fresh_pepper())
+    digest = digest_of(valid_key(), fresh_pepper())
     wrong = b"\x01" * size
 
-    require(verify_digest(wrong, digest) is False, "a short or long candidate was accepted")
-    require(verify_digest(digest, wrong) is False, "a short or long stored digest was accepted")
+    require(verify(wrong, digest) is False, "a short or long candidate was accepted")
+    require(verify(digest, wrong) is False, "a short or long stored digest was accepted")
     # nem dois valores iguais, mas inválidos, passam
-    require(verify_digest(wrong, wrong) is False, "two equal invalid digests were accepted")
+    require(verify(wrong, wrong) is False, "two equal invalid digests were accepted")
 
 
 @pytest.mark.parametrize(
@@ -421,10 +471,10 @@ def test_verify_rejects_a_digest_of_the_wrong_size_on_either_side(size: int) -> 
     ],
 )
 def test_verify_rejects_anything_that_is_not_bytes(value: Any) -> None:
-    digest = digest_key(valid_key(), fresh_pepper())
+    digest = digest_of(valid_key(), fresh_pepper())
 
-    require(verify_digest(value, digest) is False, "a non-bytes candidate was accepted")
-    require(verify_digest(digest, value) is False, "a non-bytes stored digest was accepted")
+    require(verify(value, digest) is False, "a non-bytes candidate was accepted")
+    require(verify(digest, value) is False, "a non-bytes stored digest was accepted")
 
 
 def test_verify_always_compares_32_byte_values_with_compare_digest(
@@ -438,13 +488,13 @@ def test_verify_always_compares_32_byte_values_with_compare_digest(
         return real(left, right)
 
     monkeypatch.setattr(hmac, "compare_digest", spy)
-    digest = digest_key(valid_key(), fresh_pepper())
+    digest = digest_of(valid_key(), fresh_pepper())
 
-    verify_digest(digest, digest)  # igual
-    verify_digest(digest[:-1], digest)  # tamanho errado do candidato
-    verify_digest(digest, digest + b"\x00")  # tamanho errado do armazenado
-    verify_digest(b"", b"")  # ambos inválidos
-    verify_digest(None, digest)  # type: ignore[arg-type]
+    verify(digest, digest)  # igual
+    verify(digest[:-1], digest)  # tamanho errado do candidato
+    verify(digest, digest + b"\x00")  # tamanho errado do armazenado
+    verify(b"", b"")  # ambos inválidos
+    verify(None, digest)
 
     require(bool(calls), "verify_digest did not use hmac.compare_digest")
     # o caminho de rejeição também compara, em tempo constante
@@ -475,7 +525,7 @@ def test_parsed_key_never_shows_the_secret() -> None:
 
 
 def test_issued_key_never_shows_the_secret_or_the_digest() -> None:
-    issued = issue_key_material("production", peppers(1), 1)
+    issued = issue("production", peppers(1), 1)
     raw = issued.raw_key.get_secret_value()
 
     shown = exposures(issued)
@@ -505,7 +555,7 @@ def test_a_parsed_key_stays_safe_inside_an_exception_message() -> None:
 
 
 def test_an_issued_key_stays_safe_inside_an_exception_message() -> None:
-    issued = issue_key_material("staging", peppers(1), 1)
+    issued = issue("staging", peppers(1), 1)
     forbidden = key_forbidden(issued.raw_key.get_secret_value()) | {
         "digest hex": issued.secret_digest.hex(),
         "digest repr": repr(issued.secret_digest),
@@ -526,7 +576,7 @@ def test_issue_key_material_returns_a_parseable_key_and_its_digest() -> None:
     mapping = peppers(1, 2)
     key_id = uuid4()
 
-    issued = issue_key_material("staging", mapping, 2, key_id=key_id)
+    issued = issue("staging", mapping, 2, key_id=key_id)
 
     require(isinstance(issued, IssuedKey), "issue_key_material did not return an IssuedKey")
     require(issued.key_id == key_id, "the issued key id is wrong")
@@ -534,16 +584,16 @@ def test_issue_key_material_returns_a_parseable_key_and_its_digest() -> None:
     raw = issued.raw_key.get_secret_value()
     require(must_parse(raw, "staging").key_id == key_id, "the issued key does not parse")
     require(
-        issued.secret_digest == digest_key(raw, pepper_bytes(mapping, 2)),
+        issued.secret_digest == digest_of(raw, pepper_of(mapping, 2)),
         "the issued digest does not use the requested pepper",
     )
     require(len(issued.secret_digest) == 32, "the issued digest does not have 32 bytes")
     require(
-        issued.secret_digest != digest_key(raw, pepper_bytes(mapping, 1)),
+        issued.secret_digest != digest_of(raw, pepper_of(mapping, 1)),
         "the issued digest also matches another pepper",
     )
     require(
-        verify_digest(digest_key(raw, pepper_bytes(mapping, 2)), issued.secret_digest),
+        verify(digest_of(raw, pepper_of(mapping, 2)), issued.secret_digest),
         "the issued digest does not verify",
     )
 
@@ -551,8 +601,8 @@ def test_issue_key_material_returns_a_parseable_key_and_its_digest() -> None:
 def test_issue_key_material_generates_a_new_id_and_secret_each_time() -> None:
     mapping = peppers(1)
 
-    first = issue_key_material("test", mapping, 1)
-    second = issue_key_material("test", mapping, 1)
+    first = issue("test", mapping, 1)
+    second = issue("test", mapping, 1)
 
     require(first.key_id != second.key_id, "two issued keys share an id")
     require(
@@ -563,8 +613,12 @@ def test_issue_key_material_generates_a_new_id_and_secret_each_time() -> None:
 
 
 def test_issue_key_material_with_an_unknown_pepper_version_fails() -> None:
-    with pytest.raises(UnknownPepperVersion):
-        issue_key_material("test", peppers(1), 2)
+    mapping = peppers(1)
+    error_of(
+        lambda: issue_key_material("test", mapping, 2),
+        UnknownPepperVersion,
+        "an unknown pepper version",
+    )
 
 
 # --- sem hash de senha humana ---------------------------------------------------------------
