@@ -5,7 +5,11 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
-from db_support import assert_disposable_database, run_alembic
+from db_support import (
+    assert_compose_targets_validated_database,
+    assert_disposable_database,
+    run_alembic,
+)
 from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -66,6 +70,14 @@ def _guarded_migration_settings() -> MigrationSettings:
 def migrated_database() -> None:
     """Leva o banco descartável ao head das migrations (idempotente)."""
     run_alembic(_guarded_migration_settings(), "upgrade", "head")
+
+
+@pytest.fixture
+def compose_targets_validated_database(migrator_settings: MigrationSettings) -> None:
+    """Exige que o Compose mire o banco já validado. Peça esta fixture ANTES de qualquer conexão
+    ou etapa mutante via Compose (build, run, exec) e antes de `downgrade`.
+    """
+    assert_compose_targets_validated_database(migrator_settings)
 
 
 def _engine(url: str | URL) -> AsyncEngine:

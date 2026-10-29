@@ -276,6 +276,7 @@ async def test_functions_are_not_executable_by_public_by_default(
 # --- bootstrap reaplicável ------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("compose_targets_validated_database")
 async def test_bootstrap_is_reapplicable_and_never_rotates_passwords(
     db_settings: Settings, migrator_settings: MigrationSettings
 ) -> None:

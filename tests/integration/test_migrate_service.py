@@ -29,6 +29,7 @@ async def revisions(connection: AsyncConnection) -> list[str]:
     return found
 
 
+@pytest.mark.usefixtures("compose_targets_validated_database")
 async def test_migrate_service_applies_0001_from_scratch_and_can_run_again(
     migrator_settings: MigrationSettings, migrator_connection: AsyncConnection
 ) -> None:

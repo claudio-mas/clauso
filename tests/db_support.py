@@ -6,15 +6,17 @@ bruta do Alembic nunca é repassada ao pytest.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
 
 import pytest
-from integration.support import assert_no_leaks, require
+from integration.support import assert_no_leaks, require, run_compose
 from sqlalchemy.engine import URL, make_url
 
 from cce.shared.config import MigrationSettings
@@ -93,3 +95,68 @@ def run_alembic(
             "withheld, so re-run the command by hand to read it",
         )
     return result
+
+
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def compose_target_problems(config: Mapping[str, Any], validated: URL) -> list[str]:
+    """Diferenças entre o Compose renderizado e o banco descartável já validado.
+
+    Devolve só frases fixas: nenhum valor da configuração (DSN, senha) entra nelas.
+    """
+    services = config.get("services") or {}
+    migrate = (services.get("migrate") or {}).get("environment") or {}
+    postgres = services.get("postgres") or {}
+    postgres_database = str((postgres.get("environment") or {}).get("POSTGRES_DB") or "")
+    validated_database = validated.database or ""
+    problems: list[str] = []
+
+    migrate_url = str(migrate.get("CCE_MIGRATOR_DATABASE_URL") or "")
+    try:
+        _assert_disposable_database(
+            str(migrate.get("CCE_ENV") or ""), migrate_url, "Compose migrate service"
+        )
+        migrate_database = make_url(migrate_url).database or ""
+    except UnsafeDatabaseError as error:
+        problems.append(str(error))
+        migrate_database = ""
+    if migrate_database and migrate_database != validated_database:
+        problems.append("the Compose migrate service database differs from the validated one")
+
+    # O banco validado já passou pela guarda (prefixo cce_test); igualdade basta para o postgres.
+    if postgres_database != validated_database:
+        problems.append("the Compose postgres service database differs from the validated one")
+
+    published = {
+        str(port.get("published"))
+        for port in postgres.get("ports") or []
+        if port.get("target") == 5432 and port.get("host_ip") in _LOOPBACK
+    }
+    if validated.host not in _LOOPBACK or str(validated.port or 5432) not in published:
+        problems.append("the validated connection does not reach the Compose postgres service")
+    return problems
+
+
+def assert_compose_targets_validated_database(settings: MigrationSettings) -> None:
+    """Aborta, antes de qualquer etapa mutante, se o Compose mira outro banco que o validado.
+
+    `run_compose` descarta os `CCE_*` do processo e volta ao dotenv do Compose, enquanto as
+    fixtures validam dotenv mais overrides. Só `docker compose config` roda aqui, e sua saída é
+    lida em memória, nunca impressa.
+    """
+    dsn = settings.migrator_database_url.get_secret_value()
+    assert_disposable_database(settings.env, dsn, "migrator")
+    result = run_compose("config", "--format", "json")
+    require(result.returncode == 0, "docker compose config failed; refusing to touch the database")
+    try:
+        config = json.loads(result.stdout)
+    except ValueError:
+        config = None
+    require(isinstance(config, dict), "docker compose config is unreadable; refusing to continue")
+    problems = compose_target_problems(config, make_url(dsn))
+    require(
+        not problems,
+        "refusing to run: the Compose configuration does not target the validated disposable "
+        f"database ({'; '.join(problems)})",
+    )
