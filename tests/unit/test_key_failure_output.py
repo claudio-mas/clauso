@@ -1,0 +1,343 @@
+"""Quando a primitiva de chave tem um defeito, os testes o acusam sem imprimir segredo nenhum.
+
+Roda `pytest` de verdade (`-vv --tb=long --showlocals`, o pior caso de saída) sobre
+`tests/unit/test_key_security.py` com defeitos injetados por um plugin, e sobre testes sintéticos.
+O plugin grava, num arquivo temporário, toda chave, segredo, pepper e digest que o processo interno
+gera; depois procuramos cada um deles em stdout, stderr e traceback. Tudo é sintético.
+"""
+
+from __future__ import annotations
+
+import os
+import secrets
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+import pytest
+from db_support import ROOT
+
+PLUGIN = textwrap.dedent(
+    """
+    import base64
+    import os
+    import secrets as std_secrets
+
+    import cce.integrations.api_keys.service as service
+    import cce.shared.security as security
+
+    RECORD = os.environ["KEY_RECORD_FILE"]
+    DEFECT = os.environ.get("KEY_DEFECT", "")
+
+
+    def record(*values):
+        with open(RECORD, "a", encoding="utf-8") as handle:
+            for value in values:
+                if value:
+                    handle.write(str(value) + "\\n")
+
+
+    original_token_bytes = std_secrets.token_bytes
+
+
+    def token_bytes(nbytes=None):
+        value = original_token_bytes(nbytes)
+        if len(value) >= 16:
+            record(value.hex(), base64.b64encode(value).decode(), repr(value))
+        return value
+
+
+    std_secrets.token_bytes = token_bytes
+
+    original_generate = security.generate_key
+    original_digest = security.digest_key
+    original_parse = security.parse_key
+    original_pepper = security.pepper_bytes
+    original_issue = service.issue_key_material
+
+
+    def generate_key(key_id, environment):
+        raw = original_generate(key_id, environment)
+        record(raw, raw.split("_", 3)[3])
+        if DEFECT == "wrong-format":
+            raw = raw + "x"
+            record(raw, raw.split("_", 3)[3])
+        return raw
+
+
+    def digest_key(raw_key, pepper):
+        digest = original_digest(raw_key, pepper)
+        record(digest.hex(), repr(digest), pepper.hex())
+        return digest[:-1] if DEFECT == "wrong-digest" else digest
+
+
+    def parse_key(raw_key, environment):
+        try:
+            return original_parse(raw_key, environment)
+        except security.InvalidKeyError:
+            if DEFECT == "error-echoes-key":
+                raise security.InvalidKeyError(f"invalid API key: {raw_key}") from None
+            raise
+
+
+    def pepper_bytes(peppers, version):
+        try:
+            value = original_pepper(peppers, version)
+        except security.UnknownPepperVersion:
+            if DEFECT == "pepper-error-leaks":
+                known = [p.get_secret_value() for p in peppers.values()]
+                record(*known)
+                raise security.UnknownPepperVersion(f"no pepper, known: {known}") from None
+            raise
+        record(value.hex(), repr(value))
+        return value
+
+
+    security.generate_key = generate_key
+    security.digest_key = digest_key
+    security.parse_key = parse_key
+    security.pepper_bytes = pepper_bytes
+    service.generate_key = generate_key
+    service.digest_key = digest_key
+    service.pepper_bytes = pepper_bytes
+
+    if DEFECT == "parsed-repr-leaks":
+        def leaky(self):
+            return "ParsedKey(" + self.raw_key.get_secret_value() + ")"
+
+        security.ParsedKey.__repr__ = leaky
+        security.ParsedKey.__str__ = leaky
+
+    if DEFECT == "issued-repr-leaks":
+        def leaky_issued(self):
+            return f"IssuedKey({self.raw_key.get_secret_value()} {self.secret_digest.hex()})"
+
+        service.IssuedKey.__repr__ = leaky_issued
+        service.IssuedKey.__str__ = leaky_issued
+    """
+)
+
+DEFECTS = [
+    "wrong-format",
+    "parsed-repr-leaks",
+    "issued-repr-leaks",
+    "wrong-digest",
+    "error-echoes-key",
+    "pepper-error-leaks",
+]
+
+
+def run_key_tests(
+    tmp_path: Path, defect: str
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    plugin = tmp_path / "keydefects.py"
+    plugin.write_text(PLUGIN)
+    record = tmp_path / "recorded.txt"
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+        "PYTHONPATH": str(tmp_path),
+        "KEY_RECORD_FILE": str(record),
+        "KEY_DEFECT": defect,
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/unit/test_key_security.py",
+            "-p",
+            "keydefects",
+            "-p",
+            "no:cacheprovider",
+            "-vv",
+            "--tb=long",
+            "--showlocals",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=ROOT,
+        env=environment,
+    )
+    values = record.read_text().splitlines() if record.exists() else []
+    return result, [v for v in values if len(v) >= 8]
+
+
+def leaked_labels(output: str, recorded: list[str]) -> int:
+    """Quantos valores sensíveis gerados pelo processo interno aparecem na saída."""
+    return sum(1 for value in set(recorded) if value in output)
+
+
+def test_the_control_run_passes_and_records_the_sensitive_values(tmp_path: Path) -> None:
+    result, recorded = run_key_tests(tmp_path, "")
+
+    if result.returncode != 0:
+        pytest.fail("the key tests fail without any injected defect")
+    assert len(recorded) > 500  # chaves, segredos, digests e peppers de verdade
+    if leaked_labels(result.stdout + result.stderr, recorded):
+        pytest.fail("a passing run printed a sensitive value")
+
+
+@pytest.mark.parametrize("defect", DEFECTS)
+def test_a_defect_is_reported_without_printing_any_key_secret_digest_or_pepper(
+    tmp_path: Path, defect: str
+) -> None:
+    result, recorded = run_key_tests(tmp_path, defect)
+    output = result.stdout + result.stderr
+
+    leaks = leaked_labels(output, recorded)
+    if leaks:
+        pytest.fail(f"pytest printed {leaks} sensitive value(s) while reporting the defect")
+    if result.returncode == 0 or " failed" not in output:
+        pytest.fail("the injected defect was not detected by the key tests")
+    if len(recorded) < 100:
+        pytest.fail("the plugin recorded too few values for the scan to mean anything")
+
+
+# --- testes sintéticos dos padrões de falha -------------------------------------------------
+
+SYNTHETIC = textwrap.dedent(
+    """
+    import os
+    import sys
+
+    sys.path.insert(0, os.environ["TESTS_DIR"])
+
+    from integration.support import assert_no_leaks, require
+
+    TOKEN = os.environ["SENTINEL_TOKEN"]
+    DIGEST = os.environ["SENTINEL_DIGEST"]
+    MODE = os.environ["SYNTHETIC_MODE"]
+
+
+    class LeakyKey:
+        def __repr__(self):
+            return TOKEN
+
+        __str__ = __repr__
+
+
+    class LeakyIssued:
+        def __repr__(self):
+            return f"IssuedKey({TOKEN} {DIGEST})"
+
+        __str__ = __repr__
+
+
+    def test_key_with_the_wrong_format():
+        raw = TOKEN + "x"
+        require(len(raw) == 84, "the key has the wrong length")
+        require(raw.startswith("cce_") and raw == TOKEN, "the key does not match")
+
+
+    def test_repr_returns_the_token():
+        assert_no_leaks(repr(LeakyKey()) + str(LeakyKey()), {"token": TOKEN}, "the key repr")
+
+
+    def test_exception_message_contains_the_key():
+        message = ""
+        try:
+            raise RuntimeError(f"failed for {TOKEN}")
+        except RuntimeError as error:
+            message = str(error)
+        assert_no_leaks(message, {"token": TOKEN}, "an exception message")
+
+
+    def test_issued_key_in_an_exception_message():
+        message = ""
+        try:
+            raise RuntimeError(f"failed for {LeakyIssued()!r}")
+        except RuntimeError as error:
+            message = str(error)
+        assert_no_leaks(message, {"token": TOKEN, "digest": DIGEST}, "an exception message")
+
+
+    def test_the_old_unsafe_pattern_chains_the_leak():
+        try:
+            raise RuntimeError(f"failed for {TOKEN}")
+        except RuntimeError as error:
+            assert_no_leaks(str(error), {"token": TOKEN}, "an exception message")
+
+
+    def test_the_old_introspective_assert():
+        raw = TOKEN
+        assert raw.startswith("not-the-prefix")
+    """
+)
+
+SAFE_TESTS = [
+    "test_key_with_the_wrong_format",
+    "test_repr_returns_the_token",
+    "test_exception_message_contains_the_key",
+    "test_issued_key_in_an_exception_message",
+]
+OLD_PATTERNS = ["test_the_old_unsafe_pattern_chains_the_leak", "test_the_old_introspective_assert"]
+
+
+def run_synthetic(tmp_path: Path, name: str, token: str, digest: str) -> str:
+    module = tmp_path / "test_synthetic.py"
+    module.write_text(SYNTHETIC)
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+        "TESTS_DIR": str(ROOT / "tests"),
+        "SENTINEL_TOKEN": token,
+        "SENTINEL_DIGEST": digest,
+        "SYNTHETIC_MODE": name,
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            f"{module}::{name}",
+            "-vv",
+            "--tb=long",
+            "--showlocals",
+            "-p",
+            "no:cacheprovider",
+            "--rootdir",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=tmp_path,
+        env=environment,
+    )
+    if result.returncode == 0:
+        pytest.fail("the synthetic defect was not detected")
+    return result.stdout + result.stderr
+
+
+def sentinel() -> tuple[str, str]:
+    return "cce_tst_" + secrets.token_hex(16) + "_" + secrets.token_urlsafe(32), secrets.token_hex(
+        32
+    )
+
+
+@pytest.mark.parametrize("name", SAFE_TESTS)
+def test_synthetic_defects_are_reported_without_printing_the_key_or_the_digest(
+    tmp_path: Path, name: str
+) -> None:
+    token, digest = sentinel()
+
+    output = run_synthetic(tmp_path, name, token, digest)
+
+    if token in output or digest in output or token.rsplit("_", 1)[1] in output:
+        pytest.fail("pytest printed the sentinel key, secret or digest")
+
+
+@pytest.mark.parametrize("name", OLD_PATTERNS)
+def test_the_harness_does_see_a_leak_when_the_old_unsafe_patterns_are_used(
+    tmp_path: Path, name: str
+) -> None:
+    """Controle: sem este, a varredura acima poderia estar passando por vazio."""
+    token, digest = sentinel()
+
+    output = run_synthetic(tmp_path, name, token, digest)
+
+    if token not in output:
+        pytest.fail("the control did not reproduce the leak, so the scan above proves nothing")
