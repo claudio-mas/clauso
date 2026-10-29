@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass
 from uuid import UUID
 
-import asyncpg
+import asyncpg  # type: ignore[import-untyped]
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -47,6 +47,7 @@ SENTINEL_DIGEST = hashlib.sha256(b"cce-api-key:sentinel:v1").digest()
 
 _FAILED = "authentication failed"
 _UNAVAILABLE = "authentication dependency unavailable"
+# Erros de conexão do asyncpg (senha, banco inexistente) chegam crus, sem embrulho do SQLAlchemy.
 _DATABASE_ERRORS = (SQLAlchemyError, OSError, asyncpg.PostgresError, asyncpg.InterfaceError)
 
 

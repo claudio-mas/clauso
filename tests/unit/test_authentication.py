@@ -31,6 +31,7 @@ from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import cce.integrations.api_keys.authentication as authentication
+import cce.shared.security as security
 from cce.integrations.api_keys.authentication import (
     AuthenticationFailed,
     DependencyUnavailable,
@@ -105,7 +106,7 @@ def make_settings(
 ) -> Settings:
     peppers = {1: PEPPER_1, 2: PEPPER_2}
     return Settings(
-        _env_file=None,  # type: ignore[call-arg]
+        _env_file=None,
         env=environment,
         database_url=SecretStr("postgresql+asyncpg://cce_app:x@127.0.0.1:5432/cce_test"),
         redis_url=SecretStr("redis://127.0.0.1:6379/0"),
@@ -318,13 +319,10 @@ async def test_all_rejections_are_indistinguishable(world: World) -> None:
         world.candidate = None
         presented = build(world)
 
-        error = await aerror_of(
-            lambda presented=presented: authenticate_api_key(
-                presented, settings, FakeFactory().typed()
-            ),
-            AuthenticationFailed,
-            f"authenticating ({name})",
-        )
+        async def present(presented: Any = presented) -> Principal:
+            return await authenticate_api_key(presented, settings, FakeFactory().typed())
+
+        error = await aerror_of(present, AuthenticationFailed, f"authenticating ({name})")
         described.add(describe(error))
 
     require(len(described) == 1, "two rejections differ in type, message, repr or arguments")
@@ -337,7 +335,7 @@ async def test_all_rejections_are_indistinguishable(world: World) -> None:
 def spy_on_comparison(monkeypatch: pytest.MonkeyPatch) -> list[tuple[bool, bool]]:
     """Cada comparação: (candidato tem 32 bytes, o armazenado é o digest sentinela)."""
     calls: list[tuple[bool, bool]] = []
-    real = authentication.verify_digest
+    real = security.verify_digest
 
     def spy(candidate: bytes, stored: bytes) -> bool:
         calls.append((len(candidate) == 32, stored == authentication.SENTINEL_DIGEST))
@@ -530,7 +528,7 @@ async def test_the_lookup_runs_and_closes_before_any_comparison(
     key = issued(settings)
     world.candidate = candidate_of(key, uuid4())
     factory = FakeFactory()
-    real = authentication.verify_digest
+    real = security.verify_digest
 
     def spy(candidate: bytes, stored: bytes) -> bool:
         factory.events.append("compare")

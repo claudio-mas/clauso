@@ -2,8 +2,8 @@
 
 O runtime não lê `secret_digest` nem `pepper_version` da tabela: não tem grant para as colunas. O
 digest de um candidato só chega pela função `cce_private.lookup_api_key` (migration 0003), e todo
-acesso a metadados lista as colunas não secretas explicitamente, em vez de carregar o modelo `APIKey`
-inteiro, que inclui o digest. Estas funções só dão `flush`; quem termina a transação é o
+acesso a metadados lista as colunas não secretas explicitamente, em vez de carregar o modelo
+`APIKey` inteiro, que inclui o digest. Estas funções só dão `flush`; quem termina a transação é o
 gerenciador de sessão (ADR-0013).
 """
 
@@ -86,7 +86,9 @@ async def lookup_candidate(session: AsyncSession, key_id: UUID) -> KeyCandidate 
 
 async def get_key_metadata(session: AsyncSession, key_id: UUID) -> KeyMetadata | None:
     """Metadados de uma chave visível sob o contexto da sessão (a RLS esconde as de outros)."""
-    row = (await session.execute(select(*METADATA_COLUMNS).where(APIKey.id == key_id))).one_or_none()
+    row = (
+        await session.execute(select(*METADATA_COLUMNS).where(APIKey.id == key_id))
+    ).one_or_none()
     if row is None:
         return None
     return KeyMetadata(

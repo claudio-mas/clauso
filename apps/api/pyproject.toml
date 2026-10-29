@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-cce-admin = "cce.admin.cli:app"
+cce-admin = "cce.admin.cli:main"
 
 [dependency-groups]
 dev = [

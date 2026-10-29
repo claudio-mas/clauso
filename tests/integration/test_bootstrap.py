@@ -377,11 +377,12 @@ async def test_a_commit_failure_when_issuing_returns_no_key_and_stores_none(
 
 async def revoked_at(factory: Factory, tenant_id: UUID, key_id: UUID) -> datetime | None:
     async with tenant_session(factory, tenant_id) as session:
-        return (
+        value: datetime | None = (
             await session.execute(
                 text("SELECT revoked_at FROM cce.api_keys WHERE id = :id"), {"id": key_id}
             )
         ).scalar_one()
+        return value
 
 
 async def test_it_revokes_a_key_and_the_next_authentication_fails(
@@ -504,7 +505,10 @@ async def test_changing_the_status_touches_updated_at(
 
     async def stamp() -> datetime:
         async with tenant_session(admin_factory, tenant.tenant_id) as session:
-            return (await session.execute(text("SELECT updated_at FROM cce.tenants"))).scalar_one()
+            value: datetime = (
+                await session.execute(text("SELECT updated_at FROM cce.tenants"))
+            ).scalar_one()
+            return value
 
     before = await stamp()
     async with tenant_session(admin_factory, tenant.tenant_id) as session:

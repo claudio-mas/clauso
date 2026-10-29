@@ -214,13 +214,11 @@ async def test_every_rejection_has_the_same_type_message_and_arguments(
     described = {}
     for name in REJECTIONS:
         presented = await build_rejection(name, migrator_engine, db_settings, tenant_a)
-        error = await aerror_of(
-            lambda presented=presented: authenticate_api_key(
-                presented, db_settings, runtime_factory
-            ),
-            AuthenticationFailed,
-            f"authenticating ({name})",
-        )
+
+        async def present(presented: str | None = presented) -> Principal:
+            return await authenticate_api_key(presented, db_settings, runtime_factory)
+
+        error = await aerror_of(present, AuthenticationFailed, f"authenticating ({name})")
         described[name] = (type(error).__name__, str(error), repr(error), error.args)
         await change_as_tenant(
             migrator_engine, tenant_a, "UPDATE cce.tenants SET status = 'active' WHERE id = :tenant"
@@ -322,12 +320,20 @@ async def test_the_pepper_version_stored_with_the_key_selects_the_pepper(
 # --- banco fora do ar ------------------------------------------------------------------------
 
 
-async def test_an_unreachable_database_is_a_dependency_error_and_leaks_no_connection_detail(
-    db_settings: Settings,
+BROKEN_CONNECTIONS = {
+    "connection-refused": {"port": 1},
+    "wrong-password": {},
+    "nonexistent-database": {"database": "cce_test_inexistente"},
+}
+
+
+@pytest.mark.parametrize("change", list(BROKEN_CONNECTIONS.values()), ids=list(BROKEN_CONNECTIONS))
+async def test_an_unavailable_database_is_a_dependency_error_and_leaks_no_connection_detail(
+    db_settings: Settings, change: dict[str, Any]
 ) -> None:
     sentinel_password = "senha-sentinela-" + uuid4().hex
     url = make_url(db_settings.database_url.get_secret_value()).set(
-        host="127.0.0.1", port=1, password=sentinel_password
+        host="127.0.0.1", password=sentinel_password, **change
     )
     broken = db_settings.model_copy(
         update={
@@ -341,7 +347,7 @@ async def test_an_unreachable_database_is_a_dependency_error_and_leaks_no_connec
         error = await aerror_of(
             lambda: authenticate_api_key(raw, broken, build_session_factory(engine)),
             DependencyUnavailable,
-            "authenticating with the database down",
+            "authenticating with the database unavailable",
         )
     finally:
         await engine.dispose()

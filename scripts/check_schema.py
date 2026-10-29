@@ -40,7 +40,7 @@ INFRASTRUCTURE_TABLES: Final = ("alembic_version",)
 
 _CONTEXT = "NULLIF(current_setting('app.tenant_id'::text, true), ''::text)"
 # Texto devolvido por pg_policies no PostgreSQL 17 (a versão fixada do projeto).
-EXPECTED_POLICIES: Final = {
+EXPECTED_POLICIES: Final[dict[tuple[str, str], dict[str, Any]]] = {
     ("tenants", "tenant_isolation"): {
         "permissive": "PERMISSIVE",
         "cmd": "ALL",
