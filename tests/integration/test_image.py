@@ -100,7 +100,7 @@ def test_image_carries_the_migrations_and_no_other_infrastructure_files() -> Non
     layout = run_in_image("sh", "-c", "ls /app /app/infrastructure")
 
     assert heads.returncode == 0
-    assert heads.stdout.split() == ["0001", "(head)"]
+    assert heads.stdout.split() == ["0002", "(head)"]
     assert "alembic.ini" in layout.stdout.split()
     assert layout.stdout.split().count("migrations") == 1
     assert "docker" not in layout.stdout.split()

@@ -1,7 +1,9 @@
 """Constraints, defaults e tipos de cce.tenants e cce.api_keys, contra PostgreSQL real.
 
-As linhas são inseridas como `cce_migrator` (dono das tabelas; a RLS só chega no ticket 05) e cada
-tentativa é desfeita em seguida.
+As linhas são inseridas como `cce_migrator` (dono das tabelas) e cada tentativa é desfeita em
+seguida. A RLS vale também para o dono (FORCE, migration 0002) e dispararia antes das constraints
+(`WITH CHECK` vem primeiro), então cada transação começa suspendendo a RLS das duas tabelas com
+DDL transacional: o rollback a restaura. O isolamento tem os próprios testes (`test_rls.py`).
 """
 
 from __future__ import annotations
@@ -32,6 +34,13 @@ INVALID_TIME_ZONE = "22023"  # o PostgreSQL recusa o nome na própria expressão
 Statement = tuple[str, Mapping[str, Any]]
 
 
+async def lift_rls(connection: AsyncConnection) -> None:
+    """Suspende a RLS de `tenants` e `api_keys` até o fim da transação (o rollback a restaura)."""
+    for table in ("tenants", "api_keys"):
+        await connection.execute(text(f"ALTER TABLE cce.{table} NO FORCE ROW LEVEL SECURITY"))
+        await connection.execute(text(f"ALTER TABLE cce.{table} DISABLE ROW LEVEL SECURITY"))
+
+
 def insert_statement(table: str, values: Mapping[str, Any]) -> Statement:
     columns = ", ".join(values)
     placeholders = ", ".join(f":{column}" for column in values)
@@ -44,6 +53,7 @@ async def attempt(connection: AsyncConnection, *statements: Statement) -> str:
     A transação é sempre desfeita, então nada fica no banco.
     """
     try:
+        await lift_rls(connection)
         for sql, parameters in statements:
             await connection.execute(text(sql), dict(parameters))
     except DBAPIError as error:
@@ -74,6 +84,7 @@ async def test_tenant_row_with_only_required_columns_gets_the_documented_default
 ) -> None:
     values = tenant_values()
     sql, parameters = insert_statement("tenants", values)
+    await lift_rls(migrator_connection)
     await migrator_connection.execute(text(sql), dict(parameters))
     row = (
         await migrator_connection.execute(
@@ -393,6 +404,7 @@ async def test_every_timestamp_column_is_timestamptz(
 async def test_instants_come_back_in_utc_whatever_the_session_time_zone(
     migrator_connection: AsyncConnection,
 ) -> None:
+    await lift_rls(migrator_connection)
     await migrator_connection.execute(text("SET TIME ZONE 'America/Sao_Paulo'"))
     tenant = tenant_values()
     created = datetime(2029, 1, 1, 12, 0, tzinfo=UTC)
