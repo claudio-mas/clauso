@@ -16,14 +16,13 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Generator, Iterable
+from collections.abc import Callable, Generator, Iterable
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
 import pytest
 
 MASK = "***"
-MIN_LENGTH = 6  # abaixo disso a troca atingiria texto comum
 _SECRET_NAMES = ("PASSWORD", "PEPPER")
 
 _secrets: tuple[str, ...] = ()
@@ -59,8 +58,34 @@ def _from_json(value: str) -> list[str]:
     return [str(item) for item in parsed.values()] if isinstance(parsed, dict) else []
 
 
+def _inner(text: str) -> str:
+    """Conteúdo entre as aspas do `repr`, que o pytest mostra em locais e argumentos."""
+    return repr(text)[1:-1]
+
+
+def _renderings(text: str) -> set[str]:
+    """Formas em que o pytest e os drivers podem exibir `text`, além da literal.
+
+    Barra invertida, aspas e caracteres de controle aparecem escapados (`\\`, `\\'`, `\\x07`,
+    `\\n`); o JSON e a URL têm escapes próprios. A saída de um repr entra de novo em outro repr
+    (um objeto dentro de um dict dentro de uma mensagem), então as formas são aplicadas duas vezes.
+    """
+    transforms: tuple[Callable[[str], str], ...] = (
+        _inner,
+        lambda t: t.encode("unicode_escape").decode("ascii"),
+        lambda t: _inner(t).replace("\\'", "'"),  # repr entre aspas duplas deixa a simples crua
+        lambda t: _inner(t).replace('"', '\\"'),
+        lambda t: json.dumps(t)[1:-1],
+        lambda t: quote(t, safe=""),
+    )
+    forms = {text}
+    for _ in range(2):
+        forms |= {transform(form) for form in forms for transform in transforms}
+    return forms
+
+
 def collect_secrets(environment: dict[str, str], dotenv: Path | None) -> tuple[str, ...]:
-    """Valores que nenhuma saída de teste pode conter, do ambiente e do dotenv."""
+    """Valores (e suas formas escapadas) que nenhuma saída de teste pode conter."""
     values = dict(_dotenv(dotenv)) if dotenv is not None else {}
     values.update(environment)
     found: set[str] = set()
@@ -73,8 +98,10 @@ def collect_secrets(environment: dict[str, str], dotenv: Path | None) -> tuple[s
             found.update(_from_json(value))
         if upper.endswith("_URL") and "://" in value:
             found.update(_from_url(value))
-    # O mais longo primeiro: a troca de "abcdef12" não deixa "12" para trás de "abcdef".
-    return tuple(sorted((item for item in found if len(item) >= MIN_LENGTH), key=len, reverse=True))
+    # Sem tamanho mínimo: o validador de DSN não impede senhas curtas, e mascarar texto comum a
+    # mais é melhor que deixar uma credencial. O mais longo primeiro evita restos de uma troca.
+    expanded = {form for secret in found for form in _renderings(secret) if form}
+    return tuple(sorted(expanded, key=len, reverse=True))
 
 
 def scrub(text: str, secrets: Iterable[str]) -> str:
