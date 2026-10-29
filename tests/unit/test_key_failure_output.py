@@ -73,6 +73,10 @@ PLUGIN = textwrap.dedent(
 
 
     def parse_key(raw_key, environment):
+        if DEFECT == "unexpected-exception-type":
+            raise ValueError("a fixed message that has nothing to do with the key")
+        if DEFECT == "unexpected-rejection":
+            raise security.InvalidKeyError("invalid API key")
         try:
             return original_parse(raw_key, environment)
         except security.InvalidKeyError:
@@ -146,7 +150,8 @@ PLUGIN = textwrap.dedent(
                 elif hasattr(result, "raw_key"):
                     record(result.raw_key.get_secret_value())
                     record(getattr(result, "secret_digest", b"").hex())
-                return {"returns-none": None, "returns-empty": "", "returns-wrong-type": 12345}[mode]
+                replacements = {"returns-none": None, "returns-empty": "", "returns-wrong-type": 1}
+                return replacements[mode]
 
             return defective
 
@@ -164,6 +169,8 @@ DEFECTS = [
     "wrong-digest",
     "error-echoes-key",
     "pepper-error-leaks",
+    "unexpected-exception-type",
+    "unexpected-rejection",
 ]
 
 
@@ -389,3 +396,136 @@ def test_the_harness_does_see_a_leak_when_the_old_unsafe_patterns_are_used(
 
     if token not in output:
         pytest.fail("the control did not reproduce the leak, so the scan above proves nothing")
+
+
+# --- defeitos genéricos: qualquer função, qualquer modo -------------------------------------
+
+GENERIC_FUNCTIONS = [
+    "generate_key",
+    "parse_key",
+    "digest_key",
+    "verify_digest",
+    "pepper_bytes",
+    "issue_key_material",
+]
+GENERIC_MODES = [
+    "raises-valueerror",
+    "raises-keyerror",
+    "returns-none",
+    "returns-empty",
+    "returns-wrong-type",
+]
+
+
+@pytest.mark.parametrize("mode", GENERIC_MODES)
+@pytest.mark.parametrize("function", GENERIC_FUNCTIONS)
+def test_a_generic_defect_in_any_primitive_fails_the_tests_without_printing_any_value(
+    tmp_path: Path, function: str, mode: str
+) -> None:
+    """Meta-teste mecânico: para cada função e modo, TODO teste do arquivo de chaves que a usa
+    vê uma exceção de tipo inesperado (com os argumentos na mensagem) ou um retorno trocado.
+    """
+    result, recorded = run_key_tests(tmp_path, "", f"{function}:{mode}")
+    output = result.stdout + result.stderr
+
+    leaks = leaked_labels(output, recorded)
+    if leaks:
+        pytest.fail(f"pytest printed {leaks} sensitive value(s) while reporting the defect")
+    if result.returncode == 0:
+        pytest.fail("the generic defect was not detected by the key tests")
+
+
+# --- a falha da própria regressão também não vaza -------------------------------------------
+
+LEAKY_FAILING = textwrap.dedent(
+    """
+    from uuid import uuid4
+
+    from cce.shared.security import generate_key
+
+
+    def test_introspective_assert_on_a_generated_key():
+        raw = generate_key(uuid4(), "test")
+        assert raw.startswith("not-the-prefix")
+    """
+)
+LEAKY_PASSING = textwrap.dedent(
+    """
+    import warnings
+    from uuid import uuid4
+
+    from cce.shared.security import generate_key
+
+
+    def test_passes_but_warns_with_a_key():
+        for _ in range(600):
+            raw = generate_key(uuid4(), "test")
+        warnings.warn(f"generated {raw}")
+    """
+)
+FEW_RECORDS = textwrap.dedent(
+    """
+    from uuid import uuid4
+
+    from cce.shared.security import generate_key
+
+
+    def test_generates_only_one_key():
+        generate_key(uuid4(), "test")
+    """
+)
+REGRESSION_FAILURES = [
+    pytest.param(
+        "test_a_defect_is_reported_without and wrong-format", LEAKY_FAILING, id="accuses-a-leak"
+    ),
+    pytest.param("test_the_control_run", LEAKY_PASSING, id="control-sees-a-printed-value"),
+    pytest.param("test_the_control_run", FEW_RECORDS, id="control-has-too-few-records"),
+]
+
+
+@pytest.mark.parametrize(("expression", "target_source"), REGRESSION_FAILURES)
+def test_the_regression_does_not_print_the_recorded_values_when_it_fails(
+    tmp_path: Path, expression: str, target_source: str
+) -> None:
+    """Roda a regressão contra um alvo escolhido para ela falhar, e examina a PRÓPRIA falha."""
+    target = tmp_path / "test_target.py"
+    target.write_text(target_source)
+    records = tmp_path / "records"
+    records.mkdir()
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+        "KEY_TEST_TARGET": str(target),
+        "KEY_RECORD_DIR": str(records),
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/unit/test_key_failure_output.py",
+            "-k",
+            expression,
+            "-vv",
+            "--tb=long",
+            "--showlocals",
+            "-p",
+            "no:cacheprovider",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=ROOT,
+        env=environment,
+    )
+    output = result.stdout + result.stderr
+    recorded_file = records / "recorded.txt"
+    recorded = recorded_file.read_text().splitlines() if recorded_file.exists() else []
+
+    if result.returncode == 0:
+        pytest.fail("the regression was expected to fail against this target")
+    if len(recorded) < 1:
+        pytest.fail("no value was recorded, so the scan means nothing")
+    leaks = leaked_labels(output, [v for v in recorded if len(v) >= 8])
+    if leaks:
+        pytest.fail(f"the regression printed {leaks} recorded value(s) when it failed")
