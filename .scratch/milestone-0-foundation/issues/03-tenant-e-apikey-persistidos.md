@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** blocked
+**Status:** in-progress
 
 **Plano:** Tarefa 3 e seções 8 e 9. **Vocabulário:** Tenant (`CONTEXT.md`).
 
@@ -52,3 +52,7 @@ Resta um problema:
 Limites declarados pelo Revisor: unit 431, migrations 8 e integração 164 passed (1 failed e 6 errors nos sete testes de imagem e `migrate`, por escrita proibida em `~/.docker/buildx/activity`; ele não escalonou). Esses sete vêm do Regente: 171 passed na suíte completa.
 
 Estado: três rodadas sem aprovação. O ticket vai para `blocked` à espera da decisão da pessoa. Avaliação do Regente: é uma lacuna só do harness de teste (nenhum código de produção), no cenário de um `docker-compose.yml` adulterado para apontar o `migrate` a outro servidor; a correção sugerida é pequena e localizada em `tests/`.
+
+### 2026-10-28 — Decisão da pessoa: rodada extra
+
+Após as três rodadas sem aprovação, a pessoa decidiu autorizar **uma rodada extra** (opção 1): o Programador corrige somente o achado restante da rodada 3 (guarda do `migrate` no Compose sem validar o endpoint interno do DSN; correção só em `tests/`) e o Revisor rerrevisa só esse ponto. O ticket volta de `blocked` para `in-progress`. Se esta rodada extra também não for aprovada, o ticket volta a `blocked` e a decisão retorna à pessoa.
