@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** in-review
+**Status:** done
 
 **Plano:** Tarefa 3 e seções 8 e 9. **Vocabulário:** Tenant (`CONTEXT.md`).
 
@@ -56,3 +56,15 @@ Estado: três rodadas sem aprovação. O ticket vai para `blocked` à espera da 
 ### 2026-10-28 — Decisão da pessoa: rodada extra
 
 Após as três rodadas sem aprovação, a pessoa decidiu autorizar **uma rodada extra** (opção 1): o Programador corrige somente o achado restante da rodada 3 (guarda do `migrate` no Compose sem validar o endpoint interno do DSN; correção só em `tests/`) e o Revisor rerrevisa só esse ponto. O ticket volta de `blocked` para `in-progress`. Se esta rodada extra também não for aprovada, o ticket volta a `blocked` e a decisão retorna à pessoa.
+
+### 2026-10-28 — Parecer do Revisor (Lupa), rodada extra: aprovado
+
+PR #5, head `1a90049`, rerrevisão restrita ao achado da rodada 3 (endpoint interno dos DSNs no Compose), com as conclusões favoráveis anteriores mantidas. Sem problemas bloqueantes ou importantes.
+
+- A reprodução do Revisor foi repetida pelo caminho real, com `CCE_TEST_COMPOSE_FILE` selecionando uma cópia do Compose com só o endpoint do `migrate` alterado: `other-db.invalid:5432/cce_test` e `postgres:6543/cce_test` agora são recusados por `assert_compose_targets_validated_database`, com mensagem fixa, usando só `docker compose config` (sem conexão, build, run nem exec nesses destinos). As quatro regressões de integração novas passaram: `ERROR at setup` antes do corpo mutante e sem senhas, DSNs nem host alternativo na saída do pytest.
+- Variantes avaliadas e recusadas: host com ponto final, alias alternativo, host percent-encoded, maiúsculas, `localhost`/loopback, porta ausente, roles incorretos, queries, DSN da API e serviços adicionais; variável desconhecida com URL PostgreSQL (independe do prefixo `CCE_`); DSN divergente vindo de `env_file` (resolvido no `environment` pelo Compose); interpolações parciais (verificadas sobre o DSN final).
+- Fora da garantia da checagem, por serem outra topologia executável: `command`/`entrypoint` com DSN montado por shell, substituição de executáveis e redefinição arbitrária da resolução de rede. O manifesto desta PR mantém o comando fixo `alembic upgrade head`, sem DSN nesses campos.
+- Contraprova em memória: com a implementação anterior de `compose_target_problems` (de `29aa5ca`), 21 dos 23 casos novos de endpoint falham; os 2 de query já eram recusados antes.
+- Escopo: só `tests/db_support.py` e os dois arquivos de regressão; produção, `env.py`, `config.py`, Dockerfile, `CONTEXT.md` e ADRs intactos.
+
+Checks do Revisor: `uv sync --locked`, `uv lock --check` (76 pacotes), `pytest tests/unit` (457 passed), Ruff, `ruff format --check` (45 arquivos), mypy estrito, `git diff --check`, migrations (8 passed) e integração (168 passed; 1 failed e 6 errors nos sete testes de imagem e `migrate`, por escrita proibida em `~/.docker/buildx/activity`, que ele não reproduziu nem escalonou). Esses sete vêm do Regente: 175 passed na suíte completa. O Revisor não confirmou o teardown final dele; o Regente conferiu depois que o Docker ficou sem sobras `cce*`.
