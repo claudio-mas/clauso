@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** in-progress
+**Status:** in-review
 
 **Plano:** Tarefa 3 e seções 8 e 9. **Vocabulário:** Tenant (`CONTEXT.md`).
 
