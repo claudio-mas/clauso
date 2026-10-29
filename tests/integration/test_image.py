@@ -5,7 +5,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from .support import ROOT
+from .support import ROOT, assert_no_leaks, compose_env_file, read_dotenv
 
 pytestmark = pytest.mark.integration
 
@@ -28,7 +28,12 @@ def run_in_image(*command: str, user: str | None = None) -> subprocess.Completed
 def image() -> Iterator[str]:
     build = docker("build", "--quiet", "-f", DOCKERFILE, "-t", IMAGE, ".")
     if build.returncode != 0:
-        pytest.fail(f"image build failed:\n{build.stderr[-2000:]}")
+        # O log do build ajuda a depurar, mas só sai se não trouxer nenhum segredo do dotenv.
+        dotenv = read_dotenv(compose_env_file())
+        forbidden = {name: value for name, value in dotenv.items() if "PASSWORD" in name}
+        forbidden["pepper map"] = dotenv.get("CCE_API_KEY_PEPPERS", "")
+        assert_no_leaks(build.stderr, forbidden, "the image build log")
+        pytest.fail(f"image build failed:\n{build.stderr[-2000:]}", pytrace=False)
     yield IMAGE
     docker("rmi", IMAGE)
 
