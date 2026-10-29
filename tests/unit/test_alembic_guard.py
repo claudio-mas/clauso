@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from db_support import ROOT
@@ -18,17 +19,20 @@ HOST = "db.guard.invalid"
 
 
 def alembic(
-    environment: str, database: str, *arguments: str, query: str = ""
+    environment: str, database: str, *arguments: str, query: str = "", ca_file: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
     env = {
         "PATH": os.environ.get("PATH", ""),
         "HOME": os.environ.get("HOME", ""),
         "CCE_ENV": environment,
-        "CCE_ENV_FILE": os.devnull,
         "CCE_MIGRATOR_DATABASE_URL": (
             f"postgresql+asyncpg://cce_migrator:{PASSWORD}@{HOST}:5432/{database}{query}"
         ),
     }
+    if environment not in {"staging", "production"}:
+        env["CCE_ENV_FILE"] = os.devnull  # nesses ambientes o dotenv é proibido
+    if ca_file is not None:
+        env["CCE_DATABASE_CA_FILE"] = str(ca_file)  # staging e production exigem a CA para carregar
     return subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(ROOT / "alembic.ini"), *arguments],
         capture_output=True,
@@ -52,9 +56,11 @@ DOWNGRADES = [("downgrade", "base"), ("downgrade", "-1"), ("downgrade", "0001:ba
 @pytest.mark.parametrize("arguments", DOWNGRADES)
 @pytest.mark.parametrize("environment", ["local", "staging", "production"])
 def test_downgrade_is_refused_outside_the_test_environment(
-    environment: str, arguments: tuple[str, ...]
+    tmp_path: Path, environment: str, arguments: tuple[str, ...]
 ) -> None:
-    result = alembic(environment, "cce", *arguments)
+    ca_file = tmp_path / "ca.pem"
+    ca_file.write_text("not a real certificate")
+    result = alembic(environment, "cce", *arguments, ca_file=ca_file)
 
     output = combined(result)
     assert result.returncode != 0
@@ -90,3 +96,35 @@ def test_other_commands_still_run_outside_the_test_environment(arguments: tuple[
     output = combined(result)
     assert result.returncode != 0  # sem banco: erro de conexão, não recusa
     assert "refusing to run" not in output
+
+
+@pytest.mark.parametrize("function", ["downgrade", "upgrade"])
+def test_programmatic_calls_fail_closed_because_the_direction_is_unknown(function: str) -> None:
+    """`command.*` chamado por código não traz a direção do CLI: sem banco descartável, recusa."""
+    target = "base" if function == "downgrade" else "head"
+    script = (
+        "from alembic import command\n"
+        "from alembic.config import Config\n"
+        f"command.{function}(Config('alembic.ini'), '{target}')\n"
+    )
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+        "CCE_ENV": "local",
+        "CCE_ENV_FILE": os.devnull,
+        "CCE_MIGRATOR_DATABASE_URL": (
+            f"postgresql+asyncpg://cce_migrator:{PASSWORD}@{HOST}:5432/cce"
+        ),
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=ROOT,
+        env=env,
+    )
+
+    output = combined(result)
+    assert result.returncode != 0
+    assert "refusing to run" in output

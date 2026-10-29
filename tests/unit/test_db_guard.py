@@ -71,7 +71,6 @@ QUERY_OVERRIDES = [
     "?dsn=postgresql://postgres@other.internal/cce",
     "?options=-c%20search_path=public",
     "?ssl=disable",
-    "?",
 ]
 
 
@@ -105,3 +104,23 @@ def test_the_effective_driver_parameters_are_what_the_guard_looks_at() -> None:
 def test_refuses_a_driver_it_cannot_inspect() -> None:
     with pytest.raises(pytest.fail.Exception):
         assert_disposable_database("test", "nosuchdriver://u:p@h/cce_test", "migrator")
+
+
+def test_defense_in_depth_refuses_when_the_driver_would_use_another_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mesmo sem query, o banco que o driver vai usar é que vale (aqui, forçado a `cce`)."""
+    from typing import Any
+
+    from sqlalchemy.dialects.postgresql.asyncpg import PGDialect_asyncpg
+
+    original: Any = PGDialect_asyncpg.create_connect_args
+
+    def redirected(self: PGDialect_asyncpg, url: object) -> tuple[list[object], dict[str, object]]:
+        arguments, kwargs = original(self, url)
+        return arguments, {**kwargs, "database": "cce"}
+
+    monkeypatch.setattr(PGDialect_asyncpg, "create_connect_args", redirected)
+
+    with pytest.raises(pytest.fail.Exception):
+        assert_disposable_database("test", dsn("cce_test"), "migrator")

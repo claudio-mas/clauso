@@ -1,6 +1,7 @@
 """Guard de banco descartável e execução do Alembic para os testes.
 
-Nada aqui mostra o DSN: as mensagens de recusa citam só o papel (`runtime`, `migrator`).
+Nada aqui mostra o DSN: as mensagens de recusa citam só o papel (`runtime`, `migrator`), e a saída
+bruta do Alembic nunca é repassada ao pytest.
 """
 
 from __future__ import annotations
@@ -8,39 +9,59 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
+from integration.support import assert_no_leaks, require
 from sqlalchemy.engine import URL, make_url
-from sqlalchemy.exc import ArgumentError
 
 from cce.shared.config import MigrationSettings
+from cce.shared.db.disposable import UnsafeDatabaseError
+from cce.shared.db.disposable import assert_disposable_database as _assert_disposable_database
 
 ROOT = Path(__file__).resolve().parents[1]
-DISPOSABLE_PREFIX = "cce_test"
+ENV_FILE_HINT = "run from the repository root with CCE_ENV_FILE=.env.test"
+# O subprocesso do Alembic recebe só isto do ambiente do pytest; todo o resto é montado à mão.
+PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT")
 
 
 def assert_disposable_database(environment: str, url: str | URL, role: str) -> None:
-    """Aborta o teste, sem mostrar o DSN, se não for o banco descartável de teste.
-
-    Exige `CCE_ENV=test` e, no nome do banco obtido ao parsear a URL (não por substring), o
-    prefixo `cce_test`. Vale para qualquer reset, downgrade ou escrita feita pelos testes.
-    """
-    if environment != "test":
-        pytest.fail(
-            f"refusing to run: the {role} configuration is not CCE_ENV=test "
-            "(run from the repository root with CCE_ENV_FILE=.env.test)",
-            pytrace=False,
-        )
+    """Aborta o teste, sem mostrar o DSN, se não for o banco descartável de teste."""
     try:
-        database = (make_url(url) if isinstance(url, str) else url).database or ""
-    except ArgumentError:
-        pytest.fail(f"refusing to run: the {role} database URL cannot be parsed", pytrace=False)
-    if not database.startswith(DISPOSABLE_PREFIX):
-        pytest.fail(
-            f"refusing to run: the {role} database name must start with {DISPOSABLE_PREFIX}",
-            pytrace=False,
-        )
+        _assert_disposable_database(environment, url, role)
+    except UnsafeDatabaseError as error:
+        pytest.fail(f"{error} ({ENV_FILE_HINT})", pytrace=False)
+
+
+def sensitive_components(dsn: str) -> dict[str, str]:
+    """Pedaços do DSN que nenhuma saída de teste pode conter (rótulo -> valor)."""
+    url = make_url(dsn)
+    password = url.password or ""
+    return {
+        "DSN": dsn,
+        "normalized DSN": url.render_as_string(hide_password=False),
+        "password": password,
+        "URL-encoded password": quote(password, safe=""),
+        "user and password": f"{url.username}:{password}" if password else "",
+        "database host": url.host or "",
+    }
+
+
+def alembic_environment(settings: MigrationSettings, ambient: Mapping[str, str]) -> dict[str, str]:
+    """Ambiente do subprocesso do Alembic: exatamente os settings já validados.
+
+    Nada de `CCE_*` do ambiente do pytest (nem dotenv) chega ao `env.py`; o segredo vai pelo
+    ambiente do processo, nunca pelo argv.
+    """
+    environment = {name: ambient[name] for name in PASSTHROUGH if name in ambient}
+    environment["CCE_ENV"] = settings.env
+    environment["CCE_ENV_FILE"] = os.devnull
+    environment["CCE_MIGRATOR_DATABASE_URL"] = settings.migrator_database_url.get_secret_value()
+    if settings.database_ca_file is not None:
+        environment["CCE_DATABASE_CA_FILE"] = str(settings.database_ca_file)
+    return environment
 
 
 def run_alembic(
@@ -48,24 +69,27 @@ def run_alembic(
 ) -> subprocess.CompletedProcess[str]:
     """Roda `alembic -c alembic.ini ...` como subprocesso, só contra o banco descartável.
 
-    O DSN chega ao env.py pelo ambiente (`CCE_ENV_FILE`), nunca pelo argv.
+    O processo executa a configuração validada aqui; o `env.py` ainda repete a guarda no
+    `downgrade`. A saída é examinada em busca de componentes do DSN antes de qualquer outra coisa
+    e nunca é repassada ao pytest.
     """
-    assert_disposable_database(
-        settings.env, settings.migrator_database_url.get_secret_value(), "migrator"
-    )
+    dsn = settings.migrator_database_url.get_secret_value()
+    assert_disposable_database(settings.env, dsn, "migrator")
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(ROOT / "alembic.ini"), *arguments],
         capture_output=True,
         text=True,
         check=False,
         cwd=ROOT,
-        env=dict(os.environ),
+        env=alembic_environment(settings, os.environ),
     )
-    if check and result.returncode != 0:
-        dsn = settings.migrator_database_url.get_secret_value()
-        output = result.stdout + result.stderr
-        detail = "output withheld: it contains the DSN" if dsn in output else output[-1500:]
-        pytest.fail(
-            f"alembic {arguments[0]} failed (exit {result.returncode}):\n{detail}", pytrace=False
+    assert_no_leaks(
+        result.stdout + result.stderr, sensitive_components(dsn), f"alembic {arguments[0]} output"
+    )
+    if check:
+        require(
+            result.returncode == 0,
+            f"alembic {arguments[0]} failed (exit code {result.returncode}); its output is "
+            "withheld, so re-run the command by hand to read it",
         )
     return result
