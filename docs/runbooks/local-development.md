@@ -4,7 +4,7 @@ Como subir a infraestrutura local do CCE (PostgreSQL 17, Redis 7.4 e a imagem da
 
 ## Estado atual
 
-Só a infraestrutura existe. A API ainda não roda: o serviço `api` falha ao iniciar porque `cce.main` não existe (ticket 07), e o serviço `migrate` falha porque o Alembic ainda não está configurado (ticket 03). Nada mascara isso com um health falso. Suba apenas `postgres` e `redis`.
+Existem a infraestrutura e o schema (migration `0001`: `cce.tenants` e `cce.api_keys`). A API ainda não roda: o serviço `api` falha ao iniciar porque `cce.main` não existe (ticket 07). Nada mascara isso com um health falso. Suba `postgres` e `redis`, e rode `migrate` quando precisar do schema.
 
 ## Pré-requisitos
 
@@ -41,19 +41,37 @@ docker compose down
 
 `docker compose down -v` apaga os volumes e todos os dados do ambiente. Use só em um ambiente descartável, como o de teste. Não é a forma de corrigir uma configuração.
 
+## Migrations
+
+O schema só é criado por migrations (Alembic), executadas como `cce_migrator` e com `NullPool`; `Base.metadata` nunca cria tabelas. O DSN vem do dotenv (`CCE_ENV_FILE`), não de argumento nem de `alembic.ini`.
+
+```bash
+CCE_ENV_FILE=.env uv run --project apps/api --locked alembic -c alembic.ini upgrade head
+CCE_ENV_FILE=.env uv run --project apps/api --locked alembic -c alembic.ini check
+```
+
+Pelo Compose, o serviço `migrate` roda `alembic upgrade head` uma vez e termina; a `api` só inicia depois que ele conclui com sucesso:
+
+```bash
+docker compose run --rm --no-deps migrate
+```
+
+As tabelas pertencem a `cce_migrator`, e a migration `0001` não concede nada a `cce_app` nem a `cce_auth`: sem RLS ainda (ticket 05), uma leitura do runtime enxergaria todos os Tenants.
+
 ## Ambiente de teste
 
 O ambiente de teste usa o dotenv `.env.test`, o banco `cce_test` e o **projeto Compose `cce-test`**, com volumes próprios. Passe sempre `-p cce-test` junto com `--env-file .env.test`; sem o `-p`, o Compose usaria o projeto `cce` e os volumes do ambiente local.
 
 ```bash
 docker compose --env-file .env.test -p cce-test up -d --wait postgres redis
+CCE_ENV_FILE=.env.test uv run --project apps/api --locked pytest tests/migrations
 CCE_ENV_FILE=.env.test uv run --project apps/api --locked pytest tests/integration
 docker compose --env-file .env.test -p cce-test down -v
 ```
 
 Os dois ambientes publicam as mesmas portas em loopback (5432 e 6379). Não suba os dois ao mesmo tempo.
 
-Os testes de integração recusam rodar fora de `CCE_ENV=test` e usam conexões reais como `cce_app` e `cce_migrator`. O teste da imagem constrói `cce-api:test` e o remove no fim.
+Os testes de integração e de migration recusam rodar fora de `CCE_ENV=test` e de um banco `cce_test*` (o nome é validado parseando a URL, e a recusa nunca mostra o DSN). Os de migration fazem `downgrade base` e `upgrade` no banco de teste, por isso rodam antes e separados dos demais. Eles usam conexões reais como `cce_app` e `cce_migrator`. O teste da imagem constrói `cce-api:test` e o remove no fim.
 
 ## Roles e credenciais
 
@@ -88,7 +106,7 @@ Funções criadas por `cce_migrator` e `cce_auth` não são executáveis por `PU
 docker compose build migrate   # a mesma imagem `cce-api:local` serve a API e o job de migration
 ```
 
-A imagem roda como usuário `10001`, não contém dotenv, `uv` nem dependências de desenvolvimento, e instala o pacote `cce` sem o código-fonte.
+A imagem roda como usuário `10001`, não contém dotenv, `uv` nem dependências de desenvolvimento, e instala o pacote `cce` sem o código-fonte. Leva também o `alembic.ini` e as migrations, para o serviço `migrate`.
 
 ## Qualidade
 
