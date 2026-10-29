@@ -15,12 +15,16 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from db_support import OpenSession
+from db_support import OpenSession, OpenTenantSession
 from seeding import SeededTenant, apply_context, seed_key
-from sqlalchemy import text
+from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 
-from .support import require, sql_outcome
+from cce.integrations.api_keys.model import APIKey
+from cce.integrations.api_keys.repository import METADATA_COLUMNS, get_key_metadata
+
+from .support import require, sql_outcome, sqlstate
 
 pytestmark = [
     pytest.mark.integration,
@@ -387,3 +391,47 @@ async def test_cce_auth_policies_are_select_only_and_the_runtime_policies_are_un
             f"cce.{table}: tenant_isolation changed",
         )
     require(len(by_name) == 4, "unexpected policies on the Tenant tables")
+
+
+# --- o runtime lê metadados de chave, nunca o modelo inteiro ---------------------------------
+
+
+async def test_the_runtime_reads_key_metadata_by_explicit_columns_and_never_the_whole_model(
+    migrator_engine: AsyncEngine,
+    runtime_session: OpenTenantSession,
+    tenant_a: SeededTenant,
+) -> None:
+    keyed, _ = await key_with_digest(migrator_engine, tenant_a, label="ERP")
+    assert keyed.key_id is not None
+
+    async with runtime_session(tenant_a.id) as session:
+        metadata = await get_key_metadata(session, keyed.key_id)
+    whole_model = await model_outcome(runtime_session, tenant_a)
+
+    require(metadata is not None and metadata.label == "ERP", "the metadata was not read")
+    require(
+        metadata is not None and metadata.tenant_id == tenant_a.id and metadata.revoked_at is None,
+        "wrong metadata",
+    )
+    require(whole_model == INSUFFICIENT_PRIVILEGE, "the runtime loaded the whole APIKey model")
+
+
+async def model_outcome(runtime_session: OpenTenantSession, tenant: SeededTenant) -> str:
+    """SQLSTATE de carregar o `APIKey` inteiro (inclui `secret_digest`) como o runtime."""
+    state = "ok"
+    try:
+        async with runtime_session(tenant.id) as session:
+            await session.execute(select(APIKey))
+    except DBAPIError as error:
+        state = sqlstate(error) or "unknown"
+    return state
+
+
+def test_the_metadata_columns_exclude_the_digest_and_the_pepper_version() -> None:
+    names = {column.key for column in METADATA_COLUMNS}
+
+    require(names.isdisjoint({"secret_digest", "pepper_version"}), "a secret column is readable")
+    require(
+        names == {"id", "tenant_id", "label", "scopes", "created_at", "expires_at", "revoked_at"},
+        "the metadata columns changed",
+    )
