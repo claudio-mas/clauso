@@ -80,6 +80,77 @@ async def database_constraint_names(connection: AsyncConnection) -> dict[str, se
     return names
 
 
+async def rls_state(connection: AsyncConnection) -> dict[str, list[tuple[object, ...]]]:
+    """Flags de RLS, policies e ACLs das duas tabelas (o que o metadata não representa)."""
+    queries = {
+        "flags": """
+            select relname, relrowsecurity, relforcerowsecurity
+            from pg_class
+            where oid in ('cce.tenants'::regclass, 'cce.api_keys'::regclass)
+            order by relname
+        """,
+        "policies": """
+            select tablename, policyname, permissive, roles::text, cmd, qual, with_check
+            from pg_policies
+            where schemaname = 'cce'
+            order by tablename, policyname
+        """,
+        "grants": """
+            select table_name, column_name, grantee, privilege, grantable
+            from (
+                select c.relname as table_name, null::text as column_name,
+                       pg_get_userbyid(a.grantee) as grantee, a.privilege_type as privilege,
+                       a.is_grantable as grantable
+                from pg_class c
+                cross join lateral aclexplode(c.relacl) a
+                where c.oid in ('cce.tenants'::regclass, 'cce.api_keys'::regclass)
+                  and a.grantee <> c.relowner
+                union all
+                select c.relname, t.attname, pg_get_userbyid(a.grantee), a.privilege_type,
+                       a.is_grantable
+                from pg_attribute t
+                join pg_class c on c.oid = t.attrelid
+                cross join lateral aclexplode(t.attacl) a
+                where c.oid in ('cce.tenants'::regclass, 'cce.api_keys'::regclass)
+            ) entries
+            order by table_name, column_name nulls first, grantee, privilege
+        """,
+    }
+    state = {}
+    for name, query in queries.items():
+        state[name] = [tuple(row) for row in (await connection.execute(text(query))).all()]
+    await connection.rollback()
+    return state
+
+
+async def test_0002_round_trip_removes_and_restores_rls_policies_and_grants(
+    migrator_settings: MigrationSettings, migrator_connection: AsyncConnection
+) -> None:
+    run_alembic(migrator_settings, "upgrade", "head")
+    protected = await rls_state(migrator_connection)
+
+    run_alembic(migrator_settings, "downgrade", "0001")
+    bare = await rls_state(migrator_connection)
+    assert await applied_revisions(migrator_connection) == ["0001"]
+
+    run_alembic(migrator_settings, "upgrade", "head")
+    restored = await rls_state(migrator_connection)
+
+    assert protected["flags"] == [("api_keys", True, True), ("tenants", True, True)]
+    assert [row[:2] for row in protected["policies"]] == [
+        ("api_keys", "tenant_isolation"),
+        ("tenants", "tenant_isolation"),
+    ]
+    assert protected["grants"] != []
+    assert bare == {
+        "flags": [("api_keys", False, False), ("tenants", False, False)],
+        "policies": [],
+        "grants": [],
+    }
+    assert restored == protected
+    assert await applied_revisions(migrator_connection) == ["0002"]
+
+
 async def test_empty_to_0001_to_base_to_0001(
     migrator_settings: MigrationSettings, migrator_connection: AsyncConnection
 ) -> None:
@@ -108,8 +179,8 @@ async def test_upgrade_head_is_idempotent_and_there_is_a_single_head(
     heads = run_alembic(migrator_settings, "heads")
 
     assert again.returncode == 0
-    assert heads.stdout.split() == ["0001", "(head)"]
-    assert await applied_revisions(migrator_connection) == ["0001"]
+    assert heads.stdout.split() == ["0002", "(head)"]
+    assert await applied_revisions(migrator_connection) == ["0002"]
 
 
 async def test_the_migration_matches_the_metadata(
@@ -157,8 +228,8 @@ async def test_the_subprocess_runs_the_validated_configuration_even_if_the_ambie
     result = run_alembic(migrator_settings, "current")
 
     require(result.returncode == 0, "alembic did not use the validated configuration")
-    require(result.stdout.split() == ["0001", "(head)"], "alembic is not at 0001 (head)")
-    assert await applied_revisions(migrator_connection) == ["0001"]
+    require(result.stdout.split() == ["0002", "(head)"], "alembic is not at 0002 (head)")
+    assert await applied_revisions(migrator_connection) == ["0002"]
 
 
 async def test_migration_output_never_contains_the_dsn_or_the_password(
@@ -168,6 +239,29 @@ async def test_migration_output_never_contains_the_dsn_or_the_password(
     for command in (("downgrade", "base"), ("upgrade", "head"), ("check",), ("current",)):
         result = run_alembic(migrator_settings, *command)
         assert_no_leaks(result.stdout + result.stderr, forbidden, f"alembic {command[0]} output")
+
+
+def test_offline_0002_emits_rls_policies_and_grants_without_the_probe(
+    migrator_settings: MigrationSettings,
+) -> None:
+    result = run_alembic(migrator_settings, "upgrade", "0001:0002", "--sql")
+
+    assert_no_leaks(result.stdout + result.stderr, forbidden_in_output(migrator_settings), "SQL")
+    for expected in (
+        "FORCE ROW LEVEL SECURITY",
+        "CREATE POLICY tenant_isolation ON cce.tenants",
+        "CREATE POLICY tenant_isolation ON cce.api_keys",
+    ):
+        require(expected in result.stdout, f"the offline SQL of 0002 has no {expected}")
+    require("rls_probe" not in result.stdout, "the offline SQL of 0002 mentions the test probe")
+    require("secret_digest" not in result.stdout, "0002 must not grant the digest column")
+
+
+def test_the_probe_never_reaches_the_metadata_or_the_migrations() -> None:
+    migrations = sorted((ROOT / "infrastructure" / "migrations" / "versions").glob("*.py"))
+
+    assert "rls_probe" not in {table.name for table in Base.metadata.tables.values()}
+    assert [path.name for path in migrations if "rls_probe" in path.read_text()] == []
 
 
 def test_env_py_builds_its_engine_through_the_null_pool_factory_and_never_creates_tables() -> None:

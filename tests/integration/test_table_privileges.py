@@ -1,4 +1,4 @@
-"""Dono das tabelas e privilégios dos roles do produto na migration 0001."""
+"""Dono das tabelas e privilégios dos roles do produto depois da migration 0002 (RLS)."""
 
 from __future__ import annotations
 
@@ -35,20 +35,92 @@ async def test_tables_belong_to_the_migrator(app_connection: AsyncConnection) ->
     ]
 
 
-async def test_0001_grants_nothing_to_the_runtime_roles(app_connection: AsyncConnection) -> None:
-    """Sem RLS ainda (ticket 05), qualquer SELECT do runtime enxergaria todos os Tenants."""
+ACL_ENTRIES = """
+    select table_name, column_name, grantee, privilege, grantable
+    from (
+        select c.relname as table_name, null::text as column_name,
+               case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end as grantee,
+               a.privilege_type as privilege, a.is_grantable as grantable
+        from pg_class c
+        join pg_namespace n on n.oid = c.relnamespace
+        cross join lateral aclexplode(c.relacl) a
+        where n.nspname = 'cce' and c.relkind = 'r' and a.grantee <> c.relowner
+        union all
+        select c.relname, t.attname,
+               case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end,
+               a.privilege_type, a.is_grantable
+        from pg_attribute t
+        join pg_class c on c.oid = t.attrelid
+        join pg_namespace n on n.oid = c.relnamespace
+        cross join lateral aclexplode(t.attacl) a
+        where n.nspname = 'cce' and c.relkind = 'r' and not t.attisdropped
+    ) entries
+    order by table_name, column_name nulls first, grantee, privilege
+"""
+
+# Exatamente o que o runtime recebe (plano do M0, seção 10.1). Nada para cce_auth nem para PUBLIC;
+# `secret_digest` e `pepper_version` não aparecem em nenhuma linha; `alembic_version` fica sem
+# grants até o ticket 06 (readiness).
+EXPECTED_ACL = [
+    ("api_keys", "created_at", "cce_app", "SELECT", False),
+    ("api_keys", "expires_at", "cce_app", "SELECT", False),
+    ("api_keys", "id", "cce_app", "SELECT", False),
+    ("api_keys", "label", "cce_app", "SELECT", False),
+    ("api_keys", "revoked_at", "cce_app", "SELECT", False),
+    ("api_keys", "scopes", "cce_app", "SELECT", False),
+    ("api_keys", "tenant_id", "cce_app", "SELECT", False),
+    ("tenants", None, "cce_app", "SELECT", False),
+    ("tenants", "default_currency", "cce_app", "UPDATE", False),
+    ("tenants", "locale", "cce_app", "UPDATE", False),
+    ("tenants", "name", "cce_app", "UPDATE", False),
+    ("tenants", "timezone", "cce_app", "UPDATE", False),
+    ("tenants", "updated_at", "cce_app", "UPDATE", False),
+]
+
+
+async def test_0002_grants_the_runtime_exactly_the_minimum_and_nothing_to_anyone_else(
+    app_connection: AsyncConnection,
+) -> None:
+    rows = (await app_connection.execute(text(ACL_ENTRIES))).all()
+    await app_connection.rollback()
+
+    assert [tuple(row) for row in rows] == EXPECTED_ACL
+
+
+@pytest.mark.parametrize("column", ["secret_digest", "pepper_version"])
+async def test_the_runtime_has_no_privilege_of_any_kind_on_the_secret_columns(
+    app_connection: AsyncConnection, column: str
+) -> None:
+    row = (
+        await app_connection.execute(
+            text("""
+                select has_column_privilege('cce_app', 'cce.api_keys', :column,
+                                            'SELECT, INSERT, UPDATE, REFERENCES'),
+                       has_column_privilege('cce_auth', 'cce.api_keys', :column,
+                                            'SELECT, INSERT, UPDATE, REFERENCES')
+            """),
+            {"column": column},
+        )
+    ).one()
+    await app_connection.rollback()
+
+    assert tuple(row) == (False, False)  # cce_auth só ganha o digest no ticket 06
+
+
+async def test_cce_auth_has_no_table_or_column_privilege_yet(
+    app_connection: AsyncConnection,
+) -> None:
     granted = []
-    for role in ("cce_app", "cce_auth"):
-        for table in TABLES:
-            for privilege in PRIVILEGES:
-                row = (
-                    await app_connection.execute(
-                        text("select has_table_privilege(:role, :table, :privilege)"),
-                        {"role": role, "table": table, "privilege": privilege},
-                    )
-                ).scalar_one()
-                if row:
-                    granted.append(f"{role}:{table}:{privilege}")
+    for table in TABLES:
+        for privilege in PRIVILEGES:
+            allowed = (
+                await app_connection.execute(
+                    text("select has_table_privilege('cce_auth', :table, :privilege)"),
+                    {"table": table, "privilege": privilege},
+                )
+            ).scalar_one()
+            if allowed:
+                granted.append(f"{table}:{privilege}")
     await app_connection.rollback()
 
     assert granted == []
@@ -75,16 +147,18 @@ async def test_public_has_no_privilege_on_the_tables(app_connection: AsyncConnec
 @pytest.mark.parametrize(
     "statement",
     [
-        "SELECT count(*) FROM cce.tenants",
-        "SELECT count(*) FROM cce.api_keys",
+        "SELECT count(*) FROM cce.alembic_version",
         "SELECT secret_digest FROM cce.api_keys",
+        "SELECT pepper_version FROM cce.api_keys",
         "INSERT INTO cce.tenants (id, name, slug) VALUES (gen_random_uuid(), 'x', 'x')",
-        "UPDATE cce.tenants SET name = 'x'",
+        "UPDATE cce.tenants SET slug = 'x'",
+        "UPDATE cce.api_keys SET label = 'x'",
+        "DELETE FROM cce.tenants",
         "DELETE FROM cce.api_keys",
         "TRUNCATE cce.tenants CASCADE",
     ],
 )
-async def test_runtime_role_cannot_read_or_write_the_tables(
+async def test_runtime_role_cannot_read_or_write_what_it_was_not_granted(
     app_connection: AsyncConnection, statement: str
 ) -> None:
     assert await sql_outcome(app_connection, statement) == INSUFFICIENT_PRIVILEGE

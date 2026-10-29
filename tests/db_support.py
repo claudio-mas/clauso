@@ -10,19 +10,26 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from uuid import UUID
 
 import pytest
 from integration.support import assert_no_leaks, require, run_compose
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from cce.shared.config import MigrationSettings
 from cce.shared.db.disposable import UnsafeDatabaseError
 from cce.shared.db.disposable import assert_disposable_database as _assert_disposable_database
+
+# Abre uma transação do runtime: sem contexto, ou já sob o contexto de um Tenant.
+OpenSession = Callable[[], AbstractAsyncContextManager[AsyncSession]]
+OpenTenantSession = Callable[[UUID], AbstractAsyncContextManager[AsyncSession]]
 
 ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE_HINT = "run from the repository root with CCE_ENV_FILE=.env.test"
