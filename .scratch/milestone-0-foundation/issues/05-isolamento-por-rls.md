@@ -4,7 +4,7 @@
 
 **Blocked by:** 03
 
-**Status:** in-progress
+**Status:** in-review
 
 **Plano:** Tarefa 5 e seção 10. **Vocabulário:** Tenant (`CONTEXT.md`); ADR-003.
 
