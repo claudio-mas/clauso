@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from integration.support import assert_no_leaks, require
 
 from cce.shared.config import load_admin_settings, load_migration_settings, load_settings
 
@@ -16,6 +17,12 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "init_env.py"
 TEMPLATE = ROOT / ".env.example"
 
+SECRET_LABELS = (
+    "postgres admin password",
+    "app password",
+    "migrator password",
+    "pepper",
+)
 MARKERS = (
     "__POSTGRES_PASSWORD__",
     "__APP_PASSWORD__",
@@ -81,31 +88,34 @@ def test_generates_a_local_dotenv(tmp_path: Path) -> None:
 
     result = run_init_env("--target", str(target), "--env", "local", "--database-name", "cce")
 
-    assert result.returncode == 0, result.stderr
+    require(result.returncode == 0, "init_env failed")
     text = target.read_text()
     assert not re.search(r"__[A-Z0-9_]+__", text)
     values = read_env(target)
     assert values["CCE_ENV"] == "local"
     assert values["CCE_POSTGRES_DB"] == "cce"
-    assert values["CCE_DATABASE_URL"].endswith("@127.0.0.1:5432/cce")
-    assert values["CCE_MIGRATOR_DATABASE_URL"].endswith("@127.0.0.1:5432/cce")
+    require(values["CCE_DATABASE_URL"].endswith("@127.0.0.1:5432/cce"), "app DSN database")
+    require(values["CCE_MIGRATOR_DATABASE_URL"].endswith("@127.0.0.1:5432/cce"), "migrator DSN")
 
 
 def test_generated_secrets_are_random_and_consistent(tmp_path: Path) -> None:
     first, second = tmp_path / "first.env", tmp_path / "second.env"
     for target in (first, second):
         result = run_init_env("--target", str(target), "--env", "local", "--database-name", "cce")
-        assert result.returncode == 0, result.stderr
+        require(result.returncode == 0, "init_env failed")
 
     postgres, app, migrator, pepper = generated_secrets(first)
     for password in (postgres, app, migrator):
-        assert re.fullmatch(r"[0-9a-f]{64}", password)  # secrets.token_hex(32)
-    assert len({postgres, app, migrator}) == 3
-    assert len(base64.b64decode(pepper, validate=True)) == 32
+        require(bool(re.fullmatch(r"[0-9a-f]{64}", password)), "password is not token_hex(32)")
+    require(len({postgres, app, migrator}) == 3, "the three passwords are not distinct")
+    require(len(base64.b64decode(pepper, validate=True)) == 32, "pepper is not 32 bytes")
     values = read_env(first)
-    assert f":{app}@" in values["CCE_DATABASE_URL"]
-    assert f":{migrator}@" in values["CCE_MIGRATOR_DATABASE_URL"]
-    assert set(generated_secrets(first)).isdisjoint(generated_secrets(second))
+    require(f":{app}@" in values["CCE_DATABASE_URL"], "app DSN has another password")
+    require(f":{migrator}@" in values["CCE_MIGRATOR_DATABASE_URL"], "migrator DSN password")
+    require(
+        set(generated_secrets(first)).isdisjoint(generated_secrets(second)),
+        "two runs produced a repeated secret",
+    )
 
 
 def test_replaces_only_the_explicit_markers(tmp_path: Path) -> None:
@@ -129,11 +139,10 @@ def test_does_not_print_secrets(tmp_path: Path) -> None:
 
     result = run_init_env("--target", str(target), "--env", "local", "--database-name", "cce")
 
-    assert result.returncode == 0
-    for secret in generated_secrets(target):
-        assert secret not in result.stdout
-        assert secret not in result.stderr
-    assert str(target) in result.stdout + result.stderr
+    require(result.returncode == 0, "init_env failed")
+    secrets_by_label = dict(zip(SECRET_LABELS, generated_secrets(target), strict=True))
+    assert_no_leaks(result.stdout + result.stderr, secrets_by_label, "the init_env output")
+    require(str(target) in result.stdout + result.stderr, "init_env did not name the target")
 
 
 @pytest.mark.skipif(os.name != "posix", reason="permissões POSIX")
@@ -149,12 +158,12 @@ def test_test_environment_uses_the_test_database(tmp_path: Path) -> None:
 
     result = run_init_env("--target", str(target), "--env", "test", "--database-name", "cce_test")
 
-    assert result.returncode == 0, result.stderr
+    require(result.returncode == 0, "init_env failed")
     values = read_env(target)
     assert values["CCE_ENV"] == "test"
     assert values["CCE_POSTGRES_DB"] == "cce_test"
-    assert values["CCE_DATABASE_URL"].endswith("/cce_test")
-    assert values["CCE_MIGRATOR_DATABASE_URL"].endswith("/cce_test")
+    require(values["CCE_DATABASE_URL"].endswith("/cce_test"), "app DSN database")
+    require(values["CCE_MIGRATOR_DATABASE_URL"].endswith("/cce_test"), "migrator DSN database")
 
 
 @pytest.mark.parametrize(
@@ -183,7 +192,7 @@ def test_refuses_to_overwrite_an_existing_file(tmp_path: Path) -> None:
 
     assert_refused_by_script(result)
     assert target.read_text() == "CCE_ENV=local\nCUSTOM=keep-me\n"
-    assert "keep-me" not in result.stdout + result.stderr
+    assert_no_leaks(result.stdout + result.stderr, {"existing file content": "keep-me"}, "output")
 
 
 @pytest.mark.skipif(os.name != "posix", reason="symlinks POSIX")

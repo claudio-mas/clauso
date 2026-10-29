@@ -16,6 +16,8 @@ RUN groupadd --gid 10001 cce \
     && useradd --uid 10001 --gid 10001 --no-create-home cce
 WORKDIR /app
 COPY --from=builder --chown=10001:10001 /app/apps/api/.venv ./apps/api/.venv
+COPY --chown=10001:10001 alembic.ini ./
+COPY --chown=10001:10001 infrastructure/migrations ./infrastructure/migrations
 USER 10001:10001
 EXPOSE 8000
 CMD ["uvicorn", "cce.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

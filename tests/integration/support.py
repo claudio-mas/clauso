@@ -4,11 +4,14 @@ import os
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import SecretStr
+from sqlalchemy import text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_PROJECT = "cce-test"
@@ -121,3 +124,16 @@ def sqlstate(error: BaseException) -> str | None:
 
 def with_password(url: str, password: str) -> URL:
     return make_url(url).set(password=password)
+
+
+async def sql_outcome(
+    connection: AsyncConnection, statement: str, parameters: Mapping[str, Any] | None = None
+) -> str:
+    """SQLSTATE do erro, ou 'ok'. A transação é sempre desfeita em seguida."""
+    try:
+        await connection.execute(text(statement), dict(parameters or {}))
+    except DBAPIError as error:
+        return sqlstate(error) or "unknown"
+    finally:
+        await connection.rollback()
+    return "ok"
