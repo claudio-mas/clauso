@@ -7,6 +7,7 @@ Roda pytest de verdade (`-vv --tb=long --showlocals`) sobre um módulo sintétic
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -20,7 +21,10 @@ pytestmark = pytest.mark.sensitive
 
 SYNTHETIC = textwrap.dedent(
     """
+    import logging
     import os
+    import sys
+
     import pytest
     from integration.support import require
 
@@ -71,6 +75,58 @@ SYNTHETIC = textwrap.dedent(
         require(raw == "never", "the fixed message of require")
 
 
+    @pytest.fixture
+    def teardown_prints_then_fails():
+        yield
+        print(KEY)
+        require(False, "fixed teardown message")
+
+
+    @pytest.fixture
+    def setup_chains_then_fails():
+        try:
+            raise RuntimeError(f"setup failed for {KEY}")
+        except RuntimeError:
+            require(False, "fixed setup message")
+
+
+    @sensitive
+    def test_prints_the_key_then_fails_with_a_fixed_message():
+        print(f"debug: {KEY}")
+        require(False, "fixed message after print")
+
+
+    @sensitive
+    def test_stderr_and_log_then_fails_with_a_fixed_message():
+        sys.stderr.write(f"stderr: {KEY}\\n")
+        logging.getLogger("synthetic").warning("log: %s", KEY)
+        require(False, "fixed message after stderr and log")
+
+
+    @sensitive
+    def test_chained_exception_then_fails_with_a_fixed_message():
+        try:
+            raise RuntimeError(f"original failure for {KEY}")
+        except RuntimeError:
+            require(False, "fixed message after a chain")
+
+
+    @sensitive
+    def test_teardown_prints_the_key_then_fails(teardown_prints_then_fails):
+        pass
+
+
+    @sensitive
+    def test_setup_chains_the_key_then_fails(setup_chains_then_fails):
+        pass
+
+
+    @sensitive
+    def test_passing_test_prints_the_key():
+        print(f"debug: {KEY}")
+        sys.stderr.write(f"stderr: {KEY}\\n")
+
+
     def test_unmarked_tests_still_show_their_traceback():
         other = OTHER
         assert other == "never"
@@ -97,6 +153,7 @@ def run_synthetic(tmp_path: Path, key: str, other: str) -> str:
             "-p",
             "sensitive_plugin",
             "-vv",
+            "-rA",
             "--tb=long",
             "--showlocals",
             "-p",
@@ -113,6 +170,11 @@ def run_synthetic(tmp_path: Path, key: str, other: str) -> str:
     return result.stdout + result.stderr
 
 
+def count(output: str, word: str) -> int:
+    found = re.search(rf"(\d+) {word}", output.splitlines()[-1] if output else "")
+    return int(found.group(1)) if found else 0
+
+
 def test_marked_tests_never_show_the_key_in_any_kind_of_failure(tmp_path: Path) -> None:
     key = "cce_tst_" + secrets.token_hex(16) + "_" + secrets.token_urlsafe(32)
     other = "unmarked-" + secrets.token_hex(8)
@@ -121,10 +183,32 @@ def test_marked_tests_never_show_the_key_in_any_kind_of_failure(tmp_path: Path) 
 
     if key in output or key.split("_", 3)[3] in output:
         pytest.fail("a failure of a sensitive test printed the key", pytrace=False)
-    # 5 testes sensíveis falham, 1 dá erro na fixture, e o teste sem marcador também falha
-    if "6 failed, 1 error" not in output:
-        pytest.fail("the synthetic tests did not all fail as expected", pytrace=False)
-    if "the fixed message of require" not in output:
-        pytest.fail("the fixed message of a require failure was lost", pytrace=False)
+    for fixed in (
+        "the fixed message of require",
+        "fixed message after print",
+        "fixed message after stderr and log",
+        "fixed message after a chain",
+        "fixed teardown message",
+        "fixed setup message",
+    ):
+        if fixed not in output:
+            pytest.fail(f"the fixed message {fixed!r} was lost", pytrace=False)
     if other not in output:
         pytest.fail("the hook also hid the traceback of an unmarked test", pytrace=False)
+
+
+def test_the_hook_keeps_outcomes_and_phases(tmp_path: Path) -> None:
+    key = "cce_tst_" + secrets.token_hex(16) + "_" + secrets.token_urlsafe(32)
+
+    output = run_synthetic(tmp_path, key, "unmarked-" + secrets.token_hex(8))
+
+    # 5 + 3 falhas de teste (call), 1 do teste sem marcador; 2 testes passam (um deles passa na
+    # fase call e só falha no teardown); 3 erros de fixture (setup, setup e teardown)
+    if (count(output, "failed"), count(output, "passed"), count(output, "error")) != (9, 2, 3):
+        pytest.fail("the hook changed the outcomes of the synthetic tests", pytrace=False)
+    if "ERROR at teardown of test_teardown_prints_the_key_then_fails" not in output:
+        pytest.fail("the teardown phase was not preserved", pytrace=False)
+    if "ERROR at setup of test_setup_chains_the_key_then_fails" not in output:
+        pytest.fail("the setup phase was not preserved", pytrace=False)
+    if "PASSED" not in output:
+        pytest.fail("a passing test is no longer reported as passed", pytrace=False)
