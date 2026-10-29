@@ -87,3 +87,15 @@ def test_image_installs_the_package_and_alembic_without_the_source_tree() -> Non
     assert alembic.returncode == 0
     assert "src" not in tree.stdout.split()
     assert "tests" not in tree.stdout.split()
+
+
+@pytest.mark.usefixtures("image")
+def test_image_carries_the_migrations_and_no_other_infrastructure_files() -> None:
+    heads = run_in_image("alembic", "-c", "alembic.ini", "heads")
+    layout = run_in_image("sh", "-c", "ls /app /app/infrastructure")
+
+    assert heads.returncode == 0
+    assert heads.stdout.split() == ["0001", "(head)"]
+    assert "alembic.ini" in layout.stdout.split()
+    assert layout.stdout.split().count("migrations") == 1
+    assert "docker" not in layout.stdout.split()
