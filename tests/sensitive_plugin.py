@@ -23,15 +23,31 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_runtest_makereport(
     item: pytest.Item, call: pytest.CallInfo[None]
 ) -> Generator[None, pytest.TestReport, pytest.TestReport]:
-    """Rede de segurança dos testes `sensitive`.
+    """Rede de segurança dos testes `sensitive`: o relatório nunca carrega o valor.
 
-    Qualquer falha que não seja um `pytest.fail(..., pytrace=False)` (exceção inesperada de outro
-    tipo, "DID NOT RAISE", `assert` introspectivo, erro em fixture) mostraria o valor nos locais
-    do traceback ou na mensagem da exceção. Aqui o relatório é trocado por um texto fixo com o
-    tipo da exceção, e a saída capturada é descartada.
+    Para QUALQUER relatório de item marcado, em qualquer fase (setup, call, teardown), a saída
+    capturada (stdout, stderr e log) é descartada ANTES de qualquer retorno. Ela também apareceria
+    em testes que passam, com `-rA`/`-rP`, e acumula as fases anteriores do mesmo item.
+
+    Numa falha, o `longrepr` original nunca é reaproveitado, inclusive quando a exceção é um
+    `pytest.fail(..., pytrace=False)`: `pytrace=False` só suprime o traceback, mas o pytest ainda
+    imprime a cadeia de exceções (`__cause__`/`__context__`), e o `RuntimeError` anterior pode
+    trazer a chave na mensagem. O relatório é reconstruído do zero:
+
+    * `pytest.fail(..., pytrace=False)`: só a mensagem passada a `pytest.fail` (`Failed.msg`).
+      Por contrato dos helpers (`require`, `assert_no_leaks`), ela é texto fixo e não leva valor.
+      Nenhum traceback, locais ou cadeia são copiados.
+    * qualquer outra falha (exceção de outro tipo, "DID NOT RAISE", `assert` introspectivo, erro
+      em fixture): um texto genérico com a fase e o NOME do tipo da exceção, sem mensagem.
+
+    Só `longrepr` e `sections` mudam: `outcome`, `when` e o resto do relatório ficam como estão,
+    então o hook nunca torna verde um teste que falhou.
     """
     report = yield
-    if not report.failed or item.get_closest_marker("sensitive") is None:
+    if item.get_closest_marker("sensitive") is None:
+        return report
+    report.sections = []
+    if not report.failed:
         return report
     excinfo = call.excinfo
     if (
@@ -39,11 +55,11 @@ def pytest_runtest_makereport(
         and isinstance(excinfo.value, pytest.fail.Exception)
         and not excinfo.value.pytrace
     ):
-        return report  # já é uma falha de texto fixo
+        report.longrepr = f"{excinfo.value.msg}"
+        return report
     kind = excinfo.typename if excinfo is not None else "unknown"
     report.longrepr = (
         f"{item.nodeid}: failed during {report.when} ({kind}). The traceback is withheld "
         "because this test handles key material."
     )
-    report.sections = []
     return report
