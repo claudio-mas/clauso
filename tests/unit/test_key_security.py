@@ -20,7 +20,6 @@ import pytest
 from integration.support import assert_no_leaks
 from pydantic import SecretStr
 
-import cce.shared.security as security
 from cce.integrations.api_keys.service import IssuedKey, issue_key_material
 from cce.shared.config import Environment
 from cce.shared.security import (
@@ -81,7 +80,7 @@ def test_the_secret_carries_256_bits_from_the_secrets_module(
         requested.append(nbytes or 0)
         return real(nbytes)
 
-    monkeypatch.setattr(security.secrets, "token_urlsafe", spy)
+    monkeypatch.setattr(secrets, "token_urlsafe", spy)
 
     raw = generate_key(uuid4(), "test")
 
@@ -111,7 +110,7 @@ def test_a_secret_that_contains_underscores_is_generated_and_parsed_intact(
     monkeypatch: pytest.MonkeyPatch, secret: str
 ) -> None:
     assert len(secret) == 43
-    monkeypatch.setattr(security.secrets, "token_urlsafe", lambda nbytes=None: secret)
+    monkeypatch.setattr(secrets, "token_urlsafe", lambda nbytes=None: secret)
     key_id = uuid4()
 
     raw = generate_key(key_id, "production")
@@ -189,11 +188,11 @@ def test_a_key_of_another_environment_is_rejected(environment: Environment) -> N
 
 def test_every_rejection_has_the_same_error_type_and_the_same_message() -> None:
     errors: list[BaseException] = []
-    candidates = [fn(valid_key("test")) for fn in malformed_keys().values()]
-    candidates += [valid_key("production"), b"bytes", None, 12345, object()]  # type: ignore[list-item]
+    candidates: list[Any] = [fn(valid_key("test")) for fn in malformed_keys().values()]
+    candidates += [valid_key("production"), b"bytes", None, 12345, object()]
     for candidate in candidates:
         with pytest.raises(Exception) as excinfo:
-            parse_key(candidate, "test")  # type: ignore[arg-type]
+            parse_key(candidate, "test")
         errors.append(excinfo.value)
 
     assert {type(error) for error in errors} == {InvalidKeyError}
@@ -352,7 +351,7 @@ def test_verify_always_compares_32_byte_values_with_compare_digest(
         calls.append((type(left), len(left), type(right), len(right)))
         return real(left, right)
 
-    monkeypatch.setattr(security.hmac, "compare_digest", spy)
+    monkeypatch.setattr(hmac, "compare_digest", spy)
     digest = digest_key(valid_key(), fresh_pepper())
 
     verify_digest(digest, digest)  # igual
