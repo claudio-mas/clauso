@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** blocked
+**Status:** in-progress
 
 **Plano:** Tarefa 4 e seção 11.1.
 
@@ -57,3 +57,7 @@ Problema:
 Limites declarados pelo Revisor: `pytest tests/unit` 585 passed; migrations 8 passed; integração 168 passed, 1 failed e 6 errors (os sete testes de imagem e `migrate`, por escrita proibida em `~/.docker/buildx/activity`, que ele não reproduziu nem escalonou). Esses sete vêm do Regente: 175 passed na suíte completa. Ruff, `ruff format --check`, mypy estrito e lock passaram; o hook compartilhado não quebrou migrations nem integração.
 
 Estado: três rodadas regulares sem aprovação. O ticket vai para `blocked` à espera da decisão da pessoa. Avaliação do Regente: o achado restante está só em infraestrutura de teste (o plugin compartilhado `tests/sensitive_plugin.py`, criado na rodada 2 como rede de segurança); a implementação de `security.py` e `service.py` está aprovada desde a rodada 1. As chaves nos testes são sintéticas e geradas a cada execução.
+
+### 2026-10-29 — Decisão da pessoa: rodada extra
+
+Após as três rodadas sem aprovação, a pessoa decidiu autorizar **uma rodada extra** (opção 1): o Programador corrige somente o achado restante da rodada 3 (o hook compartilhado `tests/sensitive_plugin.py` preserva `report.sections` e a cadeia de exceções no caminho `pytrace=False`; correção só em `tests/`) e o Revisor rerrevisa só esse ponto. O ticket volta de `blocked` para `in-progress`. Se esta rodada extra também não for aprovada, o ticket volta a `blocked` e a decisão retorna à pessoa.
