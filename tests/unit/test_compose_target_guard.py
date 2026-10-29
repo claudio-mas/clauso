@@ -175,11 +175,11 @@ def test_the_check_refuses_when_compose_config_fails_or_is_unreadable(
 OTHER = "other-db.invalid"
 
 
-def migrate_url(host: str = "postgres", port: str = "5432", user: str = "cce_migrator") -> str:
+def migrate_url(host: str = "postgres", port: str = ":5432", user: str = "cce_migrator") -> str:
     return f"postgresql+asyncpg://{user}:{PASSWORD}@{host}{port}/cce_test"
 
 
-def api_url(host: str = "postgres", port: str = "5432", user: str = "cce_app") -> str:
+def api_url(host: str = "postgres", port: str = ":5432", user: str = "cce_app") -> str:
     return f"postgresql+asyncpg://{user}:{PASSWORD}@{host}{port}/cce_test"
 
 

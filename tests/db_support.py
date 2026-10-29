@@ -18,6 +18,7 @@ from urllib.parse import quote
 import pytest
 from integration.support import assert_no_leaks, require, run_compose
 from sqlalchemy.engine import URL, make_url
+from sqlalchemy.exc import ArgumentError
 
 from cce.shared.config import MigrationSettings
 from cce.shared.db.disposable import UnsafeDatabaseError
@@ -99,11 +100,42 @@ def run_alembic(
 
 _LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
+# Topologia local suportada: todo serviço do Compose que fala com o banco usa o endpoint interno
+# do serviço `postgres` e o role da sua função. Qualquer outro destino é recusado em vez de
+# inferido pelo nome do banco: o CLI permite `upgrade`, que escreveria em outra instância.
+INTERNAL_HOST = "postgres"
+INTERNAL_PORT = 5432
+EXPECTED_ROLES = {"CCE_MIGRATOR_DATABASE_URL": "cce_migrator", "CCE_DATABASE_URL": "cce_app"}
+
+
+def _endpoint_problems(service: str, variable: str, raw_url: str, database: str) -> list[str]:
+    """Problemas de um DSN de banco do Compose renderizado (mensagens fixas, sem valores)."""
+    where = f"the Compose {service} service {variable}"
+    try:
+        url = make_url(raw_url)
+    except ArgumentError:
+        return [f"{where} cannot be parsed"]
+    problems = []
+    if url.host != INTERNAL_HOST or url.port != INTERNAL_PORT:
+        problems.append(
+            f"{where} does not use the internal postgres endpoint ({INTERNAL_HOST}:{INTERNAL_PORT})"
+        )
+    expected_role = EXPECTED_ROLES.get(variable)
+    if expected_role is None:
+        problems.append(f"{where} is a database URL this topology does not know")
+    elif url.username != expected_role:
+        problems.append(f"{where} does not connect as the {expected_role} role")
+    if url.query:
+        problems.append(f"{where} carries query parameters")
+    if (url.database or "") != database:
+        problems.append(f"{where} database differs from the validated one")
+    return problems
+
 
 def compose_target_problems(config: Mapping[str, Any], validated: URL) -> list[str]:
     """Diferenças entre o Compose renderizado e o banco descartável já validado.
 
-    Devolve só frases fixas: nenhum valor da configuração (DSN, senha) entra nelas.
+    Devolve só frases fixas: nenhum valor da configuração (DSN, senha, host) entra nelas.
     """
     services = config.get("services") or {}
     migrate = (services.get("migrate") or {}).get("environment") or {}
@@ -112,17 +144,23 @@ def compose_target_problems(config: Mapping[str, Any], validated: URL) -> list[s
     validated_database = validated.database or ""
     problems: list[str] = []
 
-    migrate_url = str(migrate.get("CCE_MIGRATOR_DATABASE_URL") or "")
     try:
         _assert_disposable_database(
-            str(migrate.get("CCE_ENV") or ""), migrate_url, "Compose migrate service"
+            str(migrate.get("CCE_ENV") or ""),
+            str(migrate.get("CCE_MIGRATOR_DATABASE_URL") or ""),
+            "Compose migrate service",
         )
-        migrate_database = make_url(migrate_url).database or ""
     except UnsafeDatabaseError as error:
         problems.append(str(error))
-        migrate_database = ""
-    if migrate_database and migrate_database != validated_database:
-        problems.append("the Compose migrate service database differs from the validated one")
+    if "CCE_MIGRATOR_DATABASE_URL" not in migrate:
+        problems.append("the Compose migrate service has no CCE_MIGRATOR_DATABASE_URL")
+
+    # Todo DSN de banco de qualquer serviço (migrate, api, ou um novo) precisa passar.
+    for service, definition in sorted(services.items()):
+        environment = (definition or {}).get("environment") or {}
+        for variable, value in sorted(environment.items()):
+            if str(value).startswith("postgresql"):
+                problems += _endpoint_problems(service, variable, str(value), validated_database)
 
     # O banco validado já passou pela guarda (prefixo cce_test); igualdade basta para o postgres.
     if postgres_database != validated_database:
@@ -131,7 +169,7 @@ def compose_target_problems(config: Mapping[str, Any], validated: URL) -> list[s
     published = {
         str(port.get("published"))
         for port in postgres.get("ports") or []
-        if port.get("target") == 5432 and port.get("host_ip") in _LOOPBACK
+        if port.get("target") == INTERNAL_PORT and port.get("host_ip") in _LOOPBACK
     }
     if validated.host not in _LOOPBACK or str(validated.port or 5432) not in published:
         problems.append("the validated connection does not reach the Compose postgres service")
