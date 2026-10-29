@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** in-review
+**Status:** blocked
 
 **Plano:** Tarefa 4 e seção 11.1.
 
@@ -40,3 +40,20 @@ Problemas:
    Correção sugerida: trocar o assert sobre `recorded` por `require` com mensagem fixa e usar falhas sem traceback (`pytrace=False` ou `require`) em TODOS os caminhos externos que têm valores sensíveis nos locais, inclusive controles e testes sintéticos. Acrescentar prova sobre a FALHA da própria regressão: quando ela acusa um vazamento no processo interno, o pytest externo deve mostrar só rótulo e contagem, não `output`, `recorded`, token nem digest.
 
 Estado: rodada 2 de 3. O ticket volta a `in-progress`.
+
+### 2026-10-29 — Parecer do Revisor (Lupa), rodada 3: mudanças necessárias → ticket `blocked`
+
+PR #6, head `370a290`. As conclusões favoráveis sobre a implementação de produção se mantêm (`security.py`, `service.py`, demais arquivos de produção, `CONTEXT.md` e ADRs intactos). Os achados da rodada 2 foram corrigidos nos caminhos originais: `call_or_fail` captura `Exception` e falha por `require` fora do `except`; `must_parse` verifica o tipo do retorno; `error_of` preserva a detecção de tipo incorreto sem propagar a mensagem sensível; a regressão externa usa `require` e `pytrace=False`, com prova real da falha da própria regressão. Os cenários de `ValueError` fixo em `parse_key` e de falha da regressão passaram nos meta-testes novos, sem imprimir valores. O hook (`wrapper=True`) devolve o `TestReport` sem alterar `report.outcome`, não cria aprovação nem transforma erro em sucesso, e só atua em falhas de item marcado `sensitive`.
+
+Contraprovas do Revisor em memória: desligar o hook faz o meta-teste acusar o vazamento; restaurar o assert introspectivo de formato mantém o teste vermelho e o hook retira chave e segredo da saída; voltar `must_parse`/`error_of` à captura de tipo único com `ValueError` fixo faz os dois testes selecionados falharem e o hook impede a exposição. Custo da suíte unitária: 57 s contra cerca de 25 s antes da instrumentação, considerado aceitável; sem flakiness observada.
+
+Problema:
+1. **[importante]** `tests/sensitive_plugin.py:37-42`: o retorno antecipado para `pytest.fail.Exception` com `pytrace=False` preserva o relatório original inteiro, incluindo `report.sections` (saída capturada) e o eventual encadeamento de exceções em `longrepr`. `pytrace=False` não garante falha isenta de saída capturada nem de contexto sensível, e a rede de proteção compartilhada deixa de cumprir a própria promessa nesse caminho. Reproduções independentes com pytest real (`-vv --tb=long --showlocals`, `sensitive_plugin` carregado, sentinela sintética):
+   (a) teste marcado faz `print(KEY); require(False, "fixed message")`: imprime `KEY` na seção "Captured stdout call", porque o retorno antecipado ocorre antes de `report.sections = []`;
+   (b) teste marcado faz `try: raise RuntimeError(KEY); except RuntimeError: require(False, "fixed message")`: imprime `KEY` no encadeamento do `RuntimeError` original, embora a mensagem do `require` seja fixa;
+   (c) fixture de teardown de teste marcado faz `print(KEY); require(False, "fixed teardown message")`: o erro de teardown também imprime `KEY`.
+   Correção sugerida: descartar `report.sections` para TODA falha marcada antes de qualquer retorno; para a falha `pytrace=False`, não reutilizar o `longrepr` original, e sim reconstruir uma representação segura sem a cadeia de exceções (ou aplicar o mesmo texto genérico do hook), definindo explicitamente o caminho seguro caso se queira preservar mensagens fixas úteis. Acrescentar ao meta-teste as três variantes acima, incluindo stderr e log capturados e setup/teardown, preservando `outcome` e `phase`. Não é um defeito criptográfico.
+
+Limites declarados pelo Revisor: `pytest tests/unit` 585 passed; migrations 8 passed; integração 168 passed, 1 failed e 6 errors (os sete testes de imagem e `migrate`, por escrita proibida em `~/.docker/buildx/activity`, que ele não reproduziu nem escalonou). Esses sete vêm do Regente: 175 passed na suíte completa. Ruff, `ruff format --check`, mypy estrito e lock passaram; o hook compartilhado não quebrou migrations nem integração.
+
+Estado: três rodadas regulares sem aprovação. O ticket vai para `blocked` à espera da decisão da pessoa. Avaliação do Regente: o achado restante está só em infraestrutura de teste (o plugin compartilhado `tests/sensitive_plugin.py`, criado na rodada 2 como rede de segurança); a implementação de `security.py` e `service.py` está aprovada desde a rodada 1. As chaves nos testes são sintéticas e geradas a cada execução.
