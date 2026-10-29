@@ -4,7 +4,7 @@
 
 **Blocked by:** 04, 05
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Plano:** Tarefa 6 e seção 11. **Vocabulário:** Tenant, User (`CONTEXT.md`); o ator é a chave, não um User.
 
