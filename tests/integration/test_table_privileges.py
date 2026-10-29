@@ -78,11 +78,11 @@ EXPECTED_ACL = [
     ("api_keys", "tenant_id", "cce_app", "SELECT", False),
     ("api_keys", "tenant_id", "cce_auth", "SELECT", False),
     ("tenants", None, "cce_app", "SELECT", False),
-    ("tenants", "id", "cce_auth", "SELECT", False),
-    ("tenants", "status", "cce_auth", "SELECT", False),
     ("tenants", "default_currency", "cce_app", "UPDATE", False),
+    ("tenants", "id", "cce_auth", "SELECT", False),
     ("tenants", "locale", "cce_app", "UPDATE", False),
     ("tenants", "name", "cce_app", "UPDATE", False),
+    ("tenants", "status", "cce_auth", "SELECT", False),
     ("tenants", "timezone", "cce_app", "UPDATE", False),
     ("tenants", "updated_at", "cce_app", "UPDATE", False),
 ]
