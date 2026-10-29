@@ -32,3 +32,9 @@ Evidências do Lupa (cópia extraída em /tmp): `pytest tests/migrations` 13 pas
 Sugestão (registrada em "Decisões e bloqueios", não bloqueia): `docs/runbooks/tenant-bootstrap.md` (seção "Se algo der errado") afirma que código 3 ou ausência de JSON significam que nada foi gravado; se a conexão cair depois do COMMIT confirmado, ou a saída falhar depois do commit, Tenant e chave podem existir sem JSON. Orientar a conferir o slug e, se preciso, emitir nova chave e revogar a emissão incerta.
 
 Decisão da pessoa registrada na PR: ADR 0012 aceito em 2026-10-29 (commit `d059188`).
+
+### 2026-10-29 — Re-revisão focada do Revisor (Lupa): aprovado
+
+PR #8, commit `4890e54` (correção da sugestão do runbook, autorizada pela pessoa antes do merge; só `docs/runbooks/tenant-bootstrap.md` e uma frase do ADR 0012). Sem achados bloqueantes ou importantes; diff só nos dois documentos, `git diff --check` limpo. Runbook e ADR passam a distinguir ausência de JSON ou código 3 de rollback; conferir o slug, emitir nova chave e revogar a de entrega incerta é correto e não expõe nem reutiliza segredo.
+
+Sugestão residual (não bloqueante, registrada em "Decisões e bloqueios"): as docstrings de `apps/api/src/cce/admin/bootstrap.py` (linhas 6-7 e 150-151) ainda afirmam que exceção no commit implica nada persistido; qualificar como falha confirmada com rollback e remeter ao resultado incerto descrito no runbook.
