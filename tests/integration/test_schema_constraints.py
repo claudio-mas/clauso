@@ -217,7 +217,7 @@ async def test_tenant_rejects_unknown_time_zones(
     assert result in {CHECK_VIOLATION, INVALID_TIME_ZONE}
 
 
-@pytest.mark.parametrize("name", ["", " ", "   ", "\t"])
+@pytest.mark.parametrize("name", ["", " ", "   ", "\t", "\n", " \t\n "])
 async def test_tenant_rejects_blank_names(migrator_connection: AsyncConnection, name: str) -> None:
     result = await insert(migrator_connection, "tenants", tenant_values(name=name))
 
@@ -314,7 +314,7 @@ async def test_api_key_must_expire_after_it_was_created(
     assert (later, same, earlier) == (OK, CHECK_VIOLATION, CHECK_VIOLATION)
 
 
-@pytest.mark.parametrize("label", ["", " ", "   "])
+@pytest.mark.parametrize("label", ["", " ", "   ", "\t", "\n", " \t\n "])
 async def test_api_key_rejects_blank_labels(
     migrator_connection: AsyncConnection, label: str
 ) -> None:

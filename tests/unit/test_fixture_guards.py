@@ -27,12 +27,13 @@ TARGETS = [
 ]
 
 
-def write_dotenv(path: Path, environment: str, database: str) -> None:
+def write_dotenv(path: Path, environment: str, database: str, query: str = "") -> None:
     lines = [
         f"CCE_ENV={environment}",
-        f"CCE_DATABASE_URL=postgresql+asyncpg://cce_app:{PASSWORD}@db.guard.invalid:5432/{database}",
+        "CCE_DATABASE_URL="
+        f"postgresql+asyncpg://cce_app:{PASSWORD}@db.guard.invalid:5432/{database}{query}",
         "CCE_MIGRATOR_DATABASE_URL="
-        f"postgresql+asyncpg://cce_migrator:{PASSWORD}@db.guard.invalid:5432/{database}",
+        f"postgresql+asyncpg://cce_migrator:{PASSWORD}@db.guard.invalid:5432/{database}{query}",
         "CCE_REDIS_URL=redis://redis.guard.invalid:6379/0",
         f"""CCE_API_KEY_PEPPERS='{{"1":"{PEPPER}"}}'""",
     ]
@@ -85,3 +86,21 @@ def test_fixtures_abort_in_the_test_environment_with_a_non_test_database(
         if secret in output:
             pytest.fail("the guard output exposes part of the DSN")
     assert "cannot load" in output or "refusing to run" in output
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("query", ["?database=cce", "?host=other.invalid", "?user=postgres"])
+def test_fixtures_abort_when_the_dsn_query_could_redirect_the_connection(
+    tmp_path: Path, target: str, query: str
+) -> None:
+    dotenv = tmp_path / "test.env"
+    write_dotenv(dotenv, "test", "cce_test", query)
+
+    output = run_target(target, dotenv)
+
+    for secret in (PASSWORD, "db.guard.invalid", "other.invalid", "cce_app:", "cce_migrator:"):
+        if secret in output:
+            pytest.fail("the guard output exposes part of the DSN")
+    # a recusa vem do guard, antes de qualquer tentativa de conexão (o host não resolve)
+    assert "refusing to run" in output
+    assert "query" in output

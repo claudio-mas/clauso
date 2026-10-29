@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 from db_support import ROOT, run_alembic
-from integration.support import assert_no_leaks
+from integration.support import assert_no_leaks, require
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -132,9 +132,33 @@ def test_offline_mode_emits_sql_without_touching_the_database(
 ) -> None:
     result = run_alembic(migrator_settings, "upgrade", "0001", "--sql")
 
-    assert "CREATE TABLE cce.tenants" in result.stdout
-    assert "CREATE TABLE cce.api_keys" in result.stdout
+    # Vazamento primeiro: só depois disso é seguro inspecionar a saída com `require`.
     assert_no_leaks(result.stdout + result.stderr, forbidden_in_output(migrator_settings), "SQL")
+    require("CREATE TABLE cce.tenants" in result.stdout, "the offline SQL has no tenants table")
+    require("CREATE TABLE cce.api_keys" in result.stdout, "the offline SQL has no api_keys table")
+
+
+async def test_the_subprocess_runs_the_validated_configuration_even_if_the_ambient_diverges(
+    monkeypatch: pytest.MonkeyPatch,
+    migrator_settings: MigrationSettings,
+    migrator_connection: AsyncConnection,
+) -> None:
+    run_alembic(migrator_settings, "upgrade", "head")
+    # O ambiente do processo de teste aponta para outro ambiente e outro destino. Se o
+    # subprocesso o herdasse, `current` tentaria conectar em poison.invalid e falharia.
+    poison = {
+        "CCE_ENV": "local",
+        "CCE_ENV_FILE": "/poison/.env",
+        "CCE_MIGRATOR_DATABASE_URL": "postgresql+asyncpg://cce_migrator:x@poison.invalid:5432/cce",
+    }
+    for name, value in poison.items():
+        monkeypatch.setenv(name, value)
+
+    result = run_alembic(migrator_settings, "current")
+
+    require(result.returncode == 0, "alembic did not use the validated configuration")
+    require(result.stdout.split() == ["0001", "(head)"], "alembic is not at 0001 (head)")
+    assert await applied_revisions(migrator_connection) == ["0001"]
 
 
 async def test_migration_output_never_contains_the_dsn_or_the_password(

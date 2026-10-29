@@ -61,3 +61,47 @@ def test_refusal_never_shows_the_dsn(environment: str, url: str) -> None:
     for fragment in (PASSWORD, "db.internal", "prod-db.example.com", "cce_app:", "@"):
         assert fragment not in message
     assert "migrator" in message
+
+
+QUERY_OVERRIDES = [
+    "?database=cce",
+    "?database=cce_test",
+    "?host=other.internal",
+    "?user=postgres",
+    "?dsn=postgresql://postgres@other.internal/cce",
+    "?options=-c%20search_path=public",
+    "?ssl=disable",
+    "?",
+]
+
+
+@pytest.mark.parametrize("query", QUERY_OVERRIDES)
+@pytest.mark.parametrize("role", ["runtime", "migrator"])
+def test_refuses_any_query_parameter_because_the_driver_lets_it_override_the_target(
+    role: str, query: str
+) -> None:
+    """O asyncpg aplica a query por cima da URL: '...@h/cce_test?database=cce' conecta em `cce`."""
+    with pytest.raises(pytest.fail.Exception) as excinfo:
+        assert_disposable_database("test", dsn("cce_test") + query, role)
+
+    message = str(excinfo.value)
+    assert role in message and "query" in message
+    for fragment in (PASSWORD, "db.internal", "cce_migrator:", "database=", "other.internal"):
+        assert fragment not in message
+
+
+def test_the_effective_driver_parameters_are_what_the_guard_looks_at() -> None:
+    from sqlalchemy.engine import make_url
+
+    url = make_url(dsn("cce_test") + "?database=cce")
+    _, kwargs = url.get_dialect()().create_connect_args(url)
+
+    assert url.database == "cce_test"  # o que a guarda antiga validava
+    assert kwargs["database"] == "cce"  # o que o asyncpg realmente usaria
+    with pytest.raises(pytest.fail.Exception):
+        assert_disposable_database("test", url, "migrator")
+
+
+def test_refuses_a_driver_it_cannot_inspect() -> None:
+    with pytest.raises(pytest.fail.Exception):
+        assert_disposable_database("test", "nosuchdriver://u:p@h/cce_test", "migrator")
