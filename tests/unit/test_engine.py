@@ -96,7 +96,7 @@ def test_runtime_engine_uses_the_pool_settings_without_connecting(
     assert pool.size() == 7  # type: ignore[attr-defined]
     assert pool._max_overflow == 3  # type: ignore[attr-defined]
     assert pool.timeout() == 4  # type: ignore[attr-defined]
-    assert pool._pre_ping is True  # type: ignore[attr-defined]
+    assert pool._pre_ping is True
     assert engine.echo is False
     assert engine.sync_engine.hide_parameters is True
 

@@ -105,7 +105,6 @@ def test_api_key_columns() -> None:
     )
     assert columns["label"].type.length == 100  # type: ignore[attr-defined]
     assert columns["revoked_at"].nullable
-    assert not any(not c.nullable for c in columns if c.name == "revoked_at")
     assert all(not c.nullable for c in columns if c.name != "revoked_at")
 
 
@@ -159,7 +158,7 @@ def test_api_key_repr_never_includes_the_digest() -> None:
 
 
 @pytest.mark.parametrize("folder", ["apps", "infrastructure", "scripts", "tests"])
-def test_the_schema_is_never_created_with_create_all(folder: str) -> None:
+def test_the_schema_is_only_created_by_migrations(folder: str) -> None:
     forbidden = "create" + "_all"
     offenders = [
         str(path.relative_to(ROOT))

@@ -19,7 +19,7 @@ def tenant_values(**overrides: Any) -> dict[str, Any]:
     return values
 
 
-def api_key_values(tenant_id: UUID, **overrides: Any) -> dict[str, Any]:
+def api_key_values(tenant_id: UUID, /, **overrides: Any) -> dict[str, Any]:
     """Colunas obrigatórias de uma APIKey. O digest é aleatório, sem relação com chave real."""
     created_at = datetime.now(UTC)
     values: dict[str, Any] = {

@@ -16,7 +16,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cce.shared.config import MigrationSettings
-from cce.shared.db.base import Base
+from cce.shared.db.models import Base
 
 pytestmark = pytest.mark.migration
 

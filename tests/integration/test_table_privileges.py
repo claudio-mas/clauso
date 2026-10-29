@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from .support import sql_outcome
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("migrated_database")]
 
 INSUFFICIENT_PRIVILEGE = "42501"
 TABLES = ("cce.tenants", "cce.api_keys", "cce.alembic_version")

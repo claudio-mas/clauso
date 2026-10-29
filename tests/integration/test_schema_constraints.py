@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from .support import sqlstate
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("migrated_database")]
 
 OK = "ok"
 CHECK_VIOLATION = "23514"
@@ -422,7 +422,7 @@ async def test_foreign_key_is_restrict_and_tenant_id_is_indexed(
     foreign_key = (
         await migrator_connection.execute(
             text("""
-                select conname, confdeltype
+                select conname, confdeltype::text
                 from pg_constraint
                 where conrelid = 'cce.api_keys'::regclass and contype = 'f'
             """)
