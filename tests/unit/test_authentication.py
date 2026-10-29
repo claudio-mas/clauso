@@ -9,6 +9,7 @@ fixos. O marcador `sensitive` esconde o traceback de qualquer falha inesperada.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
 import dataclasses
@@ -53,6 +54,19 @@ FIXED_MESSAGE = "authentication failed"
 # --- infraestrutura de teste -----------------------------------------------------------------
 
 
+class FakeTransaction:
+    async def __aenter__(self) -> FakeTransaction:
+        return self
+
+    async def __aexit__(
+        self,
+        kind: type[BaseException] | None,
+        error: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        return None
+
+
 class FakeSession:
     """Sessão que só registra a ordem de entrada e saída; o lookup é substituído."""
 
@@ -71,8 +85,8 @@ class FakeSession:
     ) -> None:
         self.events.append("close")
 
-    def begin(self) -> FakeSession:
-        return self
+    def begin(self) -> FakeTransaction:
+        return FakeTransaction()
 
 
 class FakeFactory:
@@ -550,17 +564,34 @@ async def test_there_is_no_positive_cache_each_authentication_asks_the_database(
     require(world.calls == 4 and error is not None, "a result was served without a lookup")
 
 
+def identifiers(source: str) -> set[str]:
+    """Nomes, atributos e módulos importados do código; docstrings e comentários ficam de fora."""
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Name):
+            found.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            found.add(node.attr)
+        elif isinstance(node, ast.ImportFrom):
+            found.add(node.module or "")
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            found.add(node.name)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            found.add(node.func.id)
+    return {name.lower() for name in found}
+
+
 def test_the_authentication_sources_hold_no_cache_and_no_tenant_context() -> None:
-    texts = {
-        path.name: path.read_text()
-        for path in (SOURCE / "authentication.py", SOURCE / "repository.py")
-    }
-    banned = ("cache", "lru_cache", "functools", "set_tenant_context", "tenant_session", "fastapi")
+    banned = ("cache", "lru", "functools", "set_tenant_context", "tenant_session", "fastapi")
     found = sorted(
-        f"{name}: {word}"
-        for name, source in texts.items()
+        f"{path.name}: {word}"
+        for path in (SOURCE / "authentication.py", SOURCE / "repository.py")
+        for name in identifiers(path.read_text())
         for word in banned
-        if word in source.lower()
+        if word in name
     )
 
     require(found == [], "authentication uses a cache, a tenant context or FastAPI")
