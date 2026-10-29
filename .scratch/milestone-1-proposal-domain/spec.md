@@ -64,10 +64,11 @@ Tudo é isolado por Tenant via RLS, auditado e coberto por testes de isolamento.
 36. Como Host, quero enviar itens com descrição, quantidade, preço unitário, desconto e tributo, para refletir fielmente o orçamento.
 37. Como Host, quero informar preços em unidades menores inteiras da moeda (centavos), para eliminar erros de ponto flutuante.
 38. Como Host, quero que o CCE calcule o total de cada linha e o Total da versão, para ter uma única fonte do número.
+38a. Como Host, quero informar um desconto global da versão, em valor, com uma descrição opcional (por exemplo, "Desconto de 10%"), para representar o desconto que dou no orçamento inteiro sem ratear entre os itens.
 39. Como Host, quero enviar também o meu total e receber rejeição (422, `TOTAL_MISMATCH`, com esperado e recebido) se divergir, para detectar divergência de arredondamento ou de regra antes de a proposta circular.
 40. Como Host, quero informar tributos como valores por linha que o CCE soma sem recalcular, para não depender de regras fiscais do CCE.
 41. Como Host, quero quantidades decimais (por exemplo horas), com regra de arredondamento documentada, para precificar serviços.
-42. Como Host, quero que desconto maior que o valor bruto da linha e valores negativos sejam recusados, para impedir Totais absurdos.
+42. Como Host, quero que desconto maior que o valor bruto da linha, desconto global maior que a soma das linhas e valores negativos sejam recusados, para impedir Totais absurdos.
 43. Como Host, quero identificar cada item por um `external_id` opcional, para reconciliar linhas com o meu orçamento.
 
 ### Host: Sections
@@ -76,7 +77,8 @@ Tudo é isolado por Tenant via RLS, auditado e coberto por testes de isolamento.
 45. Como Host, quero que um tipo de Section desconhecido ou um campo fora do schema seja recusado, para nunca guardar conteúdo que o renderer não entende.
 46. Como Host, quero que a Section `pricing` não carregue valores próprios e use o snapshot de preços, para que o número exibido não possa divergir do Total.
 47. Como Host, quero ordenar as Sections e identificá-las por chave estável dentro da versão, para que o tracking futuro se refira a elas.
-48. Como Host, quero que texto com HTML seja tratado como texto puro, para que o conteúdo editável não vire vetor de injeção na renderização futura.
+48. Como Host, quero que os campos de texto longo (corpo das Sections de texto e condições comerciais) aceitem formatação básica (parágrafos, negrito, itálico e listas), sanitizada pelo CCE, e que os demais campos sejam texto puro, para manter a formatação das minhas condições de pagamento sem abrir vetor de injeção na renderização futura.
+48a. Como Host, quero informar as condições comerciais da versão (condições de pagamento e observações) em `terms`, para que elas acompanhem a versão e sejam congeladas com ela.
 49. Como Host, quero limites claros de quantidade e tamanho de Sections e itens, para saber o que posso enviar.
 
 ### Segurança, isolamento e operação
@@ -100,14 +102,15 @@ Tudo é isolado por Tenant via RLS, auditado e coberto por testes de isolamento.
 
 - O M1 depende do gate do M0 (RLS, sessão transacional por Tenant, autenticação por API key, erros padronizados, CLI administrativa). Nada do M1 enfraquece essas garantias.
 - O M1 segue a numeração do Blueprint (Milestone 1 — Proposal Domain) e implementa apenas Customer, Contact, Proposal, ProposalVersion, itens de preço, Sections, auditoria básica e as migrations correspondentes.
-- Vocabulário: Tenant, Host, Customer, Contact, Quote, Proposal, ProposalVersion, Offer validity, Total e Commercial status seguem o `CONTEXT.md`. Respeitam-se os ADRs 0018 a 0022: o M1 aplica o 0019 (Total calculado pelo CCE) e o 0020 (um Quote, uma Proposal) e prepara a imutabilidade e o congelamento que os 0018, 0021 e 0022 exigirão depois.
+- Vocabulário: Tenant, Host, Customer, Contact, Quote, Proposal, ProposalVersion, Offer validity, Total e Commercial status seguem o `CONTEXT.md`. Respeitam-se os ADRs 0018 a 0028: o M1 aplica o 0019 e o 0027 (Total calculado pelo CCE, com desconto global em valor), o 0020 (um Quote, uma Proposal), o 0024 (trava de versão) e o 0028 (texto formatado restrito), e prepara a imutabilidade e o congelamento que os 0018, 0021 e 0022 exigirão depois.
+- Host de referência (ADR-0026): o DentBudget. As regras abaixo de desconto global, texto formatado e arredondamento foram conferidas contra o modelo dele, para que a integração do M3 não exija mudar o domínio.
 
 ### Módulos
 
 - **Customers**: Customer e Contact, com repository, service, schemas e rotas. Validação de CPF e CNPJ (dígitos verificadores) e normalização para só dígitos.
 - **Proposals**: Proposal e ProposalVersion, com repository, service, schemas e rotas. Orquestra criação, reenvio idempotente e criação/edição de versões.
 - **Pricing**: módulo de domínio puro, sem I/O, que recebe itens e devolve o snapshot de preços. Interface pública estreita: calcular o snapshot a partir de itens e moeda, e conferir contra um total informado.
-- **Content**: esquema das Sections (união discriminada por tipo), validação de limites e canonicalização para o checksum.
+- **Content**: esquema das Sections (união discriminada por tipo) e dos termos, sanitização dos campos de texto formatado (ADR-0028), validação de limites e canonicalização para o checksum.
 - **Audit**: serviço compartilhado para gravar AuditEvent dentro da mesma transação do dado alterado.
 - Os módulos seguem a regra do monólito modular: o domínio não conhece FastAPI; rotas só traduzem HTTP.
 
@@ -130,15 +133,19 @@ Tudo é isolado por Tenant via RLS, auditado e coberto por testes de isolamento.
 
 - Valores monetários são inteiros em unidades menores da moeda da Proposal; moedas aceitas BRL, USD e EUR, as mesmas do Tenant.
 - Cada item tem descrição, quantidade decimal positiva com até 3 casas, preço unitário, `discount` e `tax` (inteiros não negativos) e `external_id` opcional.
-- Total bruto da linha = quantidade × preço unitário, arredondado para o inteiro mais próximo com meio para cima. Total da linha = bruto − desconto + tributo. Total da versão = soma dos totais das linhas.
-- Desconto não pode exceder o bruto da linha. O Total nunca é negativo. Versão sem itens é válida em draft e tem Total zero; a validação de "publicável" é do M2.
+- Total bruto da linha = quantidade × preço unitário, arredondado para o inteiro mais próximo com meio para cima. Total da linha = bruto − desconto + tributo. Soma das linhas = soma dos totais das linhas. Total da versão = soma das linhas − desconto global.
+- Desconto global (ADR-0027): opcional, `discount` em unidades menores inteiras no nível do `pricing_snapshot`, com `discount_description` opcional (texto puro, até 100 caracteres) que serve só para exibição. É aplicado depois dos tributos das linhas. Não pode ser negativo nem maior que a soma das linhas.
+- O CCE nunca aplica percentuais, nem no item nem no global: o Host converte o percentual em valor com a própria regra de arredondamento e envia o valor. Para o DentBudget, isso significa enviar o desconto de cada item e o desconto global já em centavos, calculados por ele.
+- Desconto de linha não pode exceder o bruto da linha. O Total nunca é negativo. Versão sem itens é válida em draft e tem Total zero (sem itens, o desconto global precisa ser zero); a validação de "publicável" é do M2.
 - Tributo é valor opaco informado pelo Host; o CCE só soma.
 - Se o Host enviar `total`, ele é conferido; divergência retorna 422 `TOTAL_MISMATCH` com os valores esperado e recebido, e nada é gravado.
 
 ### Sections
 
 - Tipos: hero, problem, solution, scope, timeline, pricing e next_steps, cada um com schema próprio; a Section `pricing` não tem campos de valor e é renderizada a partir do snapshot.
-- Cada Section tem uma chave única dentro da versão e a ordem é a do array. Campos de texto são texto puro: não há interpretação de marcação e a renderização futura precisa escapar.
+- Cada Section tem uma chave única dentro da versão e a ordem é a do array.
+- Texto (ADR-0028): títulos, nomes, rótulos, descrições de item e `discount_description` são texto puro; a renderização futura precisa escapar. O corpo das Sections de texto (`problem`, `solution`, `scope`, `next_steps`) e os campos de `terms` são texto formatado restrito: HTML com `p`, `br`, `strong`, `b`, `em`, `i`, `ul`, `ol` e `li`, sem atributos. O CCE sanitiza na escrita (remove atributos e tags fora da lista mantendo o texto, descarta o conteúdo de `script` e `style`), grava a forma sanitizada e a devolve; checksum e comparação de reenvio usam a forma sanitizada.
+- Termos: `terms_snapshot` tem `payment_conditions` e `notes`, ambos opcionais, em texto formatado restrito, até 16 KiB cada depois de sanitizados. Entram no checksum e na comparação de reenvio.
 - Limites iniciais (ajustáveis por configuração): 50 Sections, 200 itens, 256 KiB de corpo de requisição, `metadata` até 8 KiB com profundidade máxima 3.
 
 ### Criação, reenvio e versões (ADR-0020)
@@ -182,14 +189,15 @@ Tudo é isolado por Tenant via RLS, auditado e coberto por testes de isolamento.
 ## Out of Scope
 
 - Publication, link público, templates, Brand, renderer e PDF (M2). Os estados `PUBLISHED` em diante da Proposal, o estado `ACTIVE` da Publication e o scope `proposal:publish` (ADR-0023) também ficam para o M2.
-- Integração de referência com o Mini ERP (M3), Engagement, ViewSession e webhooks (M4), Acceptance, Evidence Package, Contract e Payment (M5), IA (M6), SDKs, Embedded UI e Web Components.
+- Integração de referência com o DentBudget (M3, ADR-0026), Engagement, ViewSession e webhooks (M4), Acceptance, Evidence Package, Contract e Payment (M5), IA (M6), SDKs, Embedded UI e Web Components.
 - Entidade `User`, RBAC humano e provisionamento sob demanda; o ator é a API key.
 - Outbox e eventos de domínio (`proposal.created` etc.): entram junto com os webhooks no M4; a rastreabilidade do M1 vem do AuditEvent.
 - Cabeçalho `Idempotency-Key` genérico: no M1 não há efeito externo, e o reenvio é naturalmente idempotente pelos identificadores do Host.
 - Modelagem de condições de pagamento e `MilestoneSnapshot` dentro do pricing snapshot: o formato é extensível, mas o conteúdo é do M5 (ADR de Payment 1:N).
 - Exclusão, arquivamento e anonimização de Customers, retenção de auditoria e fluxos de LGPD.
 - Remoção ou cancelamento de Proposals em draft.
-- Descontos e tributos calculados no nível da proposta, moedas além de BRL, USD e EUR, e múltiplas moedas por Proposal.
+- Percentuais aplicados pelo CCE (de desconto ou de tributo), tributos no nível da proposta, moedas além de BRL, USD e EUR, e múltiplas moedas por Proposal. O desconto global em valor está no escopo (ADR-0027).
+- Imagens de produto, logotipo e Brand nos itens ou nas Sections (M2).
 - Busca textual e filtros avançados além dos listados.
 
 ## Further Notes
@@ -197,7 +205,9 @@ Tudo é isolado por Tenant via RLS, auditado e coberto por testes de isolamento.
 Premissas assumidas nesta spec que podem ser revistas antes da implementação:
 
 - **Drafts acumulados**: como a edição é in place, só o `POST /versions` explícito e o reenvio de Quote com conteúdo diferente criam versões; um Host que reenvia a cada pequena alteração acumulará versões. Aceito por manter o histórico comercial explícito (ADR-0020).
-- **Quantidade decimal com 3 casas e arredondamento meio para cima** foram escolhidos para cobrir horas e unidades fracionárias; se o Mini ERP usar outra regra, o erro aparecerá como `TOTAL_MISMATCH` e a regra deve ser ajustada aqui, não no Host.
+- **Quantidade decimal com 3 casas e arredondamento meio para cima** foram escolhidos para cobrir horas e unidades fracionárias; se o Host usar outra regra, o erro aparecerá como `TOTAL_MISMATCH` e a regra deve ser ajustada aqui, não no Host.
+- **Compatibilidade com o DentBudget (ADR-0026):** ele calcula `quantidade × preço` com `Decimal` e grava em `decimal(12,2)`. O ticket 05 inclui casos com quantidade fracionária cujo terceiro decimal cai exatamente no meio do centavo, e o resultado esperado é registrado como contrato. Se no M3 o DentBudget arredondar diferente nesses casos, a divergência aparece como `TOTAL_MISMATCH` e é resolvida pela regra acima.
+- **Desconto global e Payments (M5):** as condições de pagamento do M5 somam o Total já com o desconto global; nenhuma condição é calculada sobre a soma das linhas.
 - **Validação de CPF e CNPJ** assume Customers brasileiros; documentos estrangeiros precisarão de um tipo de documento explícito quando surgirem.
 - **IP truncado na auditoria** segue a configuração de privacidade do Blueprint (§49); a política final de retenção é decisão do Tenant.
 - **Limites de tamanho** são valores iniciais de configuração, sem justificativa de carga real.

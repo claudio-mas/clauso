@@ -1,8 +1,8 @@
 # Product & Technical Blueprint v1
 ## Commercial Closing Engine
 
-**Versão:** 1.2  
-**Data:** 15/10/2026  
+**Versão:** 1.3  
+**Data:** 28/10/2026  
 **Status:** Baseline para planejamento técnico, alinhada ao glossário `CONTEXT.md`  
 **Nome provisório do produto:** Commercial Closing Engine — CCE
 
@@ -13,6 +13,8 @@
 **Alinhamento ao glossário (v1.1):** os termos de domínio deste documento seguem o [CONTEXT.md](CONTEXT.md), e as decisões que o alinhamento exigiu estão registradas nos ADRs 0018–0022 em `docs/adr/`. Mudanças em relação à v1.0: (1) Tenant, Host, Customer, Contact e Recipient passam a ter definições fixas (§10–§11); (2) `Workspace` sai do modelo até existir um caso real; (3) a validade da oferta passa da Proposal para a ProposalVersion (§12–§13); (4) os estados de Proposal, Publication, Contract e Payment passam a ser ciclos independentes (§15); (5) um Quote corresponde a uma única Proposal (§16, §35); (6) cada Publication é fixada em uma única ProposalVersion (§17); (7) o Total é sempre calculado pelo CCE (§21); (8) a apresentação é congelada no aceite (§25); (9) uma Proposal aceita pode ter vários Payments (§29); (10) a evidência de aceite é retida mesmo diante de pedido de exclusão (§49). O Technical Implementation Plan do Milestone 0 não foi revisado nesta passagem.
 
 **Revisão v1.2:** (1) publicar exige um User ou uma API key com o scope `proposal:publish`, e a revisão humana obrigatória vale para versões geradas pela IA do CCE (ADR-0023, §15.1, §16, §36); (2) `READY` deixa de ser estado da Proposal: *draft* e *ready* são atributos da ProposalVersion (§15.1); (3) a trava da ProposalVersion no banco admite só as transições de publicação e aceite (ADR-0024); (4) migrations de dados percorrem os Tenants um a um, sem bypass de RLS (ADR-0025, §38); (5) os ADRs 001–010 deste Blueprint passam a existir como arquivos `docs/adr/0001`–`0010` (§73).
+
+**Revisão v1.3:** (1) o Host de referência passa a ser o DentBudget (Orçamento Fácil), e não um Mini ERP construído para isso (ADR-0026, §63, §64, §86, §92); (2) o Total admite um desconto global da versão, informado em valor, e o CCE nunca aplica percentuais (ADR-0027, §21); (3) campos de texto longo do conteúdo e dos termos aceitam um subconjunto fechado de HTML sanitizado (ADR-0028, §14).
 
 **Navegação:** produto e arquitetura (1–10); domínio e propostas (11–19); IA e conversação (20–24); fechamento e integração (25–40); stack e infraestrutura (41–55); MVPs e integração (56–72); decisões, riscos e roadmap (73–93).
 
@@ -488,6 +490,8 @@ HTML
 
 Essa separação permitirá diferentes layouts sem reconstruir propostas.
 
+Campos de texto longo (o corpo das Sections de texto e as condições comerciais) aceitam um subconjunto fechado de HTML (parágrafos, quebra de linha, negrito, itálico e listas, sem atributos), sanitizado pelo CCE na escrita; os demais campos são texto puro (ADR-0028).
+
 ---
 
 ## 15. Lifecycles: Proposal, Publication, Contract e Payment
@@ -727,7 +731,7 @@ Esses dados serão tratados como **trusted commercial facts**.
 
 A IA trabalha sobre a narrativa; o domínio controla os números.
 
-O **Total** da proposta é sempre calculado pelo CCE a partir dos `LineItemSnapshot`s, em unidades menores inteiras da moeda da Proposal. Se o Host também enviar um total e ele divergir, a requisição é rejeitada (conferência de reconciliação). Tributos chegam como valores opacos informados pelo Host; o CCE nunca os calcula (ADR-0019).
+O **Total** da proposta é sempre calculado pelo CCE a partir dos `LineItemSnapshot`s, em unidades menores inteiras da moeda da Proposal. Se o Host também enviar um total e ele divergir, a requisição é rejeitada (conferência de reconciliação). Tributos chegam como valores opacos informados pelo Host; o CCE nunca os calcula (ADR-0019). A versão pode ter um desconto global, informado em valor; o Total é a soma dos itens menos esse desconto, e o CCE nunca aplica percentuais (ADR-0027).
 
 ---
 
@@ -1147,7 +1151,7 @@ Exemplo:
 
 ```json
 {
-  "external_source": "mini-erp",
+  "external_source": "dentbudget",
   "external_id": "ORC-000187"
 }
 ```
@@ -1922,21 +1926,17 @@ No Golden Path o Contract é dispensado pela política do Tenant (o Simple Accep
 
 ## 63. First Integration Target
 
-A primeira integração deverá ser feita com uma aplicação nossa.
-
-Sugestão:
-
-**Mini ERP Django.**
+A primeira integração será feita com uma aplicação nossa: o **DentBudget** (Orçamento Fácil), sistema Django 5 + DRF + PostgreSQL de gestão de orçamentos para revenda de produtos odontológicos (ADR-0026).
 
 Motivos:
 
 - domínio conhecido;
-- orçamento já existe;
-- cliente já existe;
-- itens já existem;
+- orçamento, itens e cliente já existem e já estão em produção;
+- várias empresas numa mesma instalação, cada uma um Tenant;
+- regras reais que o domínio precisa suportar: desconto global, quantidade fracionária, preço negociado por item e condições de pagamento formatadas;
 - ambiente sob nosso controle.
 
-O ERP será utilizado como reference host.
+O DentBudget será utilizado como reference host, num ambiente de teste com dados sintéticos.
 
 Isso ajudará a validar a qualidade da API antes de publicarmos SDK.
 
@@ -1945,7 +1945,7 @@ Isso ajudará a validar a qualidade da API antes de publicarmos SDK.
 Fluxo:
 
 ```text
-Mini ERP
+DentBudget
 │
 ├── Cliente
 │
@@ -1969,7 +1969,7 @@ Public Proposal
      Payment
         │
         ▼
-Mini ERP recebe webhook
+DentBudget recebe webhook
 ```
 
 No ERP:
@@ -2200,6 +2200,9 @@ ADRs deverão nascer junto com o projeto.
 | ADR-023 — Publicação por API key | Publicar exige User ou API key com `proposal:publish`; revisão humana obrigatória para conteúdo da IA | Golden Path pela API sem abrir mão da revisão do que a IA gera |
 | ADR-024 — Trava de versão no banco | Gatilho admite só as transições de publicação e aceite | Imutabilidade garantida pelo banco sem impedir o aceite |
 | ADR-025 — Migrations de dados por Tenant | Backfills percorrem os Tenants um a um, sem bypass de RLS | Preservar o isolamento no processo mais privilegiado |
+| ADR-026 — DentBudget como Host de referência | O M3 integra o DentBudget, não um Mini ERP construído para isso | Regras reais do Host no domínio desde o M1 |
+| ADR-027 — Desconto global em valor | Total = soma das linhas − desconto global; o CCE nunca aplica percentual | Hosts dão desconto no orçamento inteiro sem divergência de arredondamento |
+| ADR-028 — Texto formatado restrito | Campos longos aceitam HTML com allowlist fechada, sanitizado na escrita | Manter a formatação do Host sem vetor de injeção |
 
 Os ADRs 011–017 estão reservados pelo plano do Milestone 0; por isso os ADRs deste alinhamento começam em 018. Os arquivos ficam em `docs/adr/` com quatro dígitos (`0001-...md`).
 
@@ -2478,7 +2481,9 @@ Um ERP consegue criar e publicar uma proposta real.
 
 ## 86. Milestone 3 — Reference Integration
 
-Integrar ao Mini ERP.
+Integrar ao DentBudget (ADR-0026).
+
+A spec do M3 decide como o aceite do comprador se relaciona com a aprovação interna do DentBudget, que hoje gera o pedido e a baixa de estoque.
 
 Criar no orçamento:
 
@@ -2592,7 +2597,7 @@ Com este Blueprint, ficam estabelecidas como baseline:
 | Pagamentos | Provider abstraction |
 | Assinatura | Provider abstraction |
 | Eventos | Domain events + Outbox |
-| Primeiro host | Mini ERP Django |
+| Primeiro host | DentBudget (Orçamento Fácil), Django |
 | Prioridade inicial | Proposal Core |
 | IA | Após Golden Path básico |
 | Microservices | Não inicialmente |
