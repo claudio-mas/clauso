@@ -12,6 +12,7 @@
 - [ ] `check_schema` falha se faltar FORCE RLS, policy, grant, FK composta ou o gatilho de trava em qualquer tabela nova
 - [ ] A cadeia de migrations sobe do zero ao head e desce e sobe de novo em banco descartável, restaurando constraints, policies e grants
 - [ ] Para cada recurso novo existe ao menos um teste em que o Tenant A tenta ler, alterar e referenciar dados do Tenant B e falha
+- [ ] Um teste de contrato com um orçamento no formato do DentBudget (ADR-0026) cria a Proposal com Customer inline, itens com quantidade fracionária e desconto por item, desconto global e condições de pagamento formatadas, reenvia o mesmo Quote sem criar versão e confere Total, checksum e texto sanitizado; o payload fica versionado em `tests/contracts/` como referência para a integração do M3
 - [ ] Um teste exercita todos os endpoints e confirma que os logs não contêm nome, e-mail, documento, valores monetários nem conteúdo de propostas, e que audit_events não contém valores de campos pessoais
 - [ ] A cobertura global continua ≥ 85% com os casos críticos de isolamento, trava de versão e auditoria obrigatórios
 - [ ] A documentação da API e o `CONTEXT.md` refletem o que foi implementado, e qualquer divergência encontrada é registrada nos tickets ou nos ADRs

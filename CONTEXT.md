@@ -57,7 +57,7 @@ Decisão explícita do Recipient de recusar a ProposalVersion. Não é final: pu
 _Avoid_: Decline, loss
 
 **Total**:
-O valor da Proposal, sempre calculado pelo CCE a partir dos itens. Se o Host enviar um total diferente, a requisição é rejeitada. Tributos chegam do Host como valores informados; o CCE nunca os calcula.
+O valor da Proposal, sempre calculado pelo CCE: a soma dos itens menos o desconto global da versão. Se o Host enviar um total diferente, a requisição é rejeitada. Tributos e descontos chegam do Host como valores informados; o CCE nunca os calcula nem aplica percentuais (ADR-0019, ADR-0027).
 _Avoid_: Amount, price
 
 ### Fechamento

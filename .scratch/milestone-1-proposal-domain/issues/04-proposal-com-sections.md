@@ -13,7 +13,11 @@
 - [ ] `GET /proposals/{id}` devolve a Proposal com a versão corrente embutida
 - [ ] As Sections aceitam só os tipos hero, problem, solution, scope, timeline, pricing e next_steps, cada um com seu schema; tipo desconhecido ou campo extra retorna 422
 - [ ] A Section `pricing` não aceita campos de valor; chave única por versão e ordem preservada
-- [ ] Texto é tratado como texto puro; limites de 50 Sections e 256 KiB de corpo são aplicados
+- [ ] Títulos, nomes e rótulos são texto puro; o corpo das Sections `problem`, `solution`, `scope` e `next_steps` aceita texto formatado restrito (ADR-0028): `p`, `br`, `strong`, `b`, `em`, `i`, `ul`, `ol`, `li`, sem atributos
+- [ ] A sanitização na escrita remove atributos e tags fora da lista mantendo o texto, descarta o conteúdo de `script` e `style` e grava a forma sanitizada, que a API devolve; testes cobrem tag proibida, atributo (`onclick`, `style`, `href="javascript:..."`), entidades e HTML malformado
+- [ ] `terms` aceita `payment_conditions` e `notes` opcionais em texto formatado restrito, até 16 KiB cada depois de sanitizados, e entram no checksum
+- [ ] O checksum usa a forma sanitizada: o mesmo conteúdo enviado com e sem um atributo proibido gera o mesmo checksum
+- [ ] Limites de 50 Sections e 256 KiB de corpo são aplicados
 - [ ] `valid_until` é opcional e, quando informado no passado, retorna 422; a moeda e o `customer_id` da Proposal são imutáveis
 - [ ] O checksum é estável: o mesmo conteúdo em ordem de chaves diferente gera o mesmo checksum, e conteúdo diferente gera outro
 - [ ] Criar grava AuditEvent; o ator é o ID da API key; scopes `proposal:*` são exigidos
