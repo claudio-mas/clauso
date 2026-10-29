@@ -81,7 +81,7 @@ async def database_constraint_names(connection: AsyncConnection) -> dict[str, se
 
 
 async def rls_state(connection: AsyncConnection) -> dict[str, list[tuple[object, ...]]]:
-    """Flags de RLS, policies e ACLs das duas tabelas (o que o metadata não representa)."""
+    """Flags de RLS, policies, ACLs e funções (o que o metadata não representa)."""
     queries = {
         "flags": """
             select relname, relrowsecurity, relforcerowsecurity
@@ -103,7 +103,8 @@ async def rls_state(connection: AsyncConnection) -> dict[str, list[tuple[object,
                        a.is_grantable as grantable
                 from pg_class c
                 cross join lateral aclexplode(c.relacl) a
-                where c.oid in ('cce.tenants'::regclass, 'cce.api_keys'::regclass)
+                where c.oid in ('cce.tenants'::regclass, 'cce.api_keys'::regclass,
+                                'cce.alembic_version'::regclass)
                   and a.grantee <> c.relowner
                 union all
                 select c.relname, t.attname, pg_get_userbyid(a.grantee), a.privilege_type,
@@ -111,9 +112,19 @@ async def rls_state(connection: AsyncConnection) -> dict[str, list[tuple[object,
                 from pg_attribute t
                 join pg_class c on c.oid = t.attrelid
                 cross join lateral aclexplode(t.attacl) a
-                where c.oid in ('cce.tenants'::regclass, 'cce.api_keys'::regclass)
+                where c.oid in ('cce.tenants'::regclass, 'cce.api_keys'::regclass,
+                                'cce.alembic_version'::regclass)
             ) entries
             order by table_name, column_name nulls first, grantee, privilege
+        """,
+        "functions": """
+            select n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid)
+                   || ')', pg_get_userbyid(p.proowner), p.prosecdef, p.proconfig::text,
+                   p.proacl::text
+            from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+            where n.nspname in ('cce', 'cce_private')
+            order by 1
         """,
     }
     state = {}
@@ -127,14 +138,16 @@ async def test_0002_round_trip_removes_and_restores_rls_policies_and_grants(
     migrator_settings: MigrationSettings, migrator_connection: AsyncConnection
 ) -> None:
     run_alembic(migrator_settings, "upgrade", "head")
+    run_alembic(migrator_settings, "downgrade", "0002")
     protected = await rls_state(migrator_connection)
 
     run_alembic(migrator_settings, "downgrade", "0001")
     bare = await rls_state(migrator_connection)
     assert await applied_revisions(migrator_connection) == ["0001"]
 
-    run_alembic(migrator_settings, "upgrade", "head")
+    run_alembic(migrator_settings, "upgrade", "0002")
     restored = await rls_state(migrator_connection)
+    run_alembic(migrator_settings, "upgrade", "head")
 
     assert protected["flags"] == [("api_keys", True, True), ("tenants", True, True)]
     assert [row[:2] for row in protected["policies"]] == [
@@ -142,13 +155,70 @@ async def test_0002_round_trip_removes_and_restores_rls_policies_and_grants(
         ("tenants", "tenant_isolation"),
     ]
     assert protected["grants"] != []
+    assert protected["functions"] == []
     assert bare == {
         "flags": [("api_keys", False, False), ("tenants", False, False)],
         "policies": [],
         "grants": [],
+        "functions": [],
     }
     assert restored == protected
+    assert await applied_revisions(migrator_connection) == ["0003"]
+
+
+LOOKUP_IDENTITY = "cce_private.lookup_api_key(p_key_id uuid)"
+AUTH_COLUMNS = {
+    "tenants": {"id", "status"},
+    "api_keys": {
+        "id",
+        "tenant_id",
+        "secret_digest",
+        "pepper_version",
+        "scopes",
+        "expires_at",
+        "revoked_at",
+    },
+}
+
+
+async def test_0003_round_trip_adds_and_removes_the_lookup_function_policies_and_grants(
+    migrator_settings: MigrationSettings, migrator_connection: AsyncConnection
+) -> None:
+    run_alembic(migrator_settings, "upgrade", "head")
+    complete = await rls_state(migrator_connection)
+    run_alembic(migrator_settings, "downgrade", "0002")
+    before = await rls_state(migrator_connection)
     assert await applied_revisions(migrator_connection) == ["0002"]
+    run_alembic(migrator_settings, "upgrade", "head")
+    restored = await rls_state(migrator_connection)
+
+    function = [row for row in complete["functions"] if row[0] == LOOKUP_IDENTITY]
+    assert len(function) == 1 and len(complete["functions"]) == 1
+    _, owner, definer, config, acl = function[0]
+    assert (owner, definer) == ("cce_auth", True)
+    assert "search_path=pg_catalog, pg_temp" in str(config) and "row_security=on" in str(config)
+    assert {item.split("=")[0] for item in str(acl).strip("{}").split(",")} == {
+        "cce_auth",
+        "cce_app",
+    }  # a string vazia à esquerda do "=" seria PUBLIC
+    assert {row[:2] for row in complete["policies"]} == {
+        ("api_keys", "auth_lookup"),
+        ("api_keys", "tenant_isolation"),
+        ("tenants", "auth_lookup"),
+        ("tenants", "tenant_isolation"),
+    }
+    auth_grants = {(row[0], row[1]) for row in complete["grants"] if row[2] == "cce_auth"}
+    assert auth_grants == {
+        (table, column) for table, columns in AUTH_COLUMNS.items() for column in columns
+    }
+    assert ("alembic_version", None, "cce_app", "SELECT", False) in complete["grants"]
+
+    assert before["functions"] == []
+    assert not [row for row in before["policies"] if row[1] == "auth_lookup"]
+    assert not [row for row in before["grants"] if row[2] == "cce_auth"]
+    assert not [row for row in before["grants"] if row[0] == "alembic_version"]
+    assert restored == complete
+    assert await applied_revisions(migrator_connection) == ["0003"]
 
 
 async def test_empty_to_0001_to_base_to_0001(
@@ -179,8 +249,8 @@ async def test_upgrade_head_is_idempotent_and_there_is_a_single_head(
     heads = run_alembic(migrator_settings, "heads")
 
     assert again.returncode == 0
-    assert heads.stdout.split() == ["0002", "(head)"]
-    assert await applied_revisions(migrator_connection) == ["0002"]
+    assert heads.stdout.split() == ["0003", "(head)"]
+    assert await applied_revisions(migrator_connection) == ["0003"]
 
 
 async def test_the_migration_matches_the_metadata(
@@ -228,8 +298,8 @@ async def test_the_subprocess_runs_the_validated_configuration_even_if_the_ambie
     result = run_alembic(migrator_settings, "current")
 
     require(result.returncode == 0, "alembic did not use the validated configuration")
-    require(result.stdout.split() == ["0002", "(head)"], "alembic is not at 0002 (head)")
-    assert await applied_revisions(migrator_connection) == ["0002"]
+    require(result.stdout.split() == ["0003", "(head)"], "alembic is not at 0003 (head)")
+    assert await applied_revisions(migrator_connection) == ["0003"]
 
 
 async def test_migration_output_never_contains_the_dsn_or_the_password(
@@ -255,6 +325,27 @@ def test_offline_0002_emits_rls_policies_and_grants_without_the_probe(
         require(expected in result.stdout, f"the offline SQL of 0002 has no {expected}")
     require("rls_probe" not in result.stdout, "the offline SQL of 0002 mentions the test probe")
     require("secret_digest" not in result.stdout, "0002 must not grant the digest column")
+
+
+def test_offline_0003_emits_a_pinned_definer_with_explicit_grants(
+    migrator_settings: MigrationSettings,
+) -> None:
+    result = run_alembic(migrator_settings, "upgrade", "0002:0003", "--sql")
+
+    assert_no_leaks(result.stdout + result.stderr, forbidden_in_output(migrator_settings), "SQL")
+    for expected in (
+        "SECURITY DEFINER",
+        "SET search_path = pg_catalog, pg_temp",
+        "SET row_security = on",
+        "CREATE POLICY auth_lookup ON cce.tenants",
+        "CREATE POLICY auth_lookup ON cce.api_keys",
+        "REVOKE ALL ON FUNCTION cce_private.lookup_api_key(uuid) FROM PUBLIC",
+        "GRANT EXECUTE ON FUNCTION cce_private.lookup_api_key(uuid) TO cce_app",
+        "GRANT SELECT ON cce.alembic_version TO cce_app",
+    ):
+        require(expected in result.stdout, f"the offline SQL of 0003 has no {expected}")
+    require("rls_probe" not in result.stdout, "the offline SQL of 0003 mentions the test probe")
+    require("TO PUBLIC" not in result.stdout, "0003 grants something to PUBLIC")
 
 
 def test_the_probe_never_reaches_the_metadata_or_the_migrations() -> None:

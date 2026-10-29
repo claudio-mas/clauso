@@ -422,7 +422,7 @@ async def test_runtime_has_no_write_on_the_protected_tenant_columns(
 POLICIES = """
     select tablename, policyname, permissive, cmd, roles::text[], qual, with_check
     from pg_policies
-    where schemaname = 'cce'
+    where schemaname = 'cce' and policyname = 'tenant_isolation'
     order by tablename, policyname
 """
 

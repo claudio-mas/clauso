@@ -10,16 +10,18 @@ Saída: `schema check passed` (código 0), uma linha por problema (código 1) ou
 puder ser lido, uma mensagem fixa em stderr com o nome do tipo do erro (código 2). Nunca imprime
 DSN, senha nem o texto do erro do driver.
 
-Os conjuntos esperados abaixo crescem junto com as migrations: o ticket 06 (migration 0003)
-acrescenta as policies de `cce_auth`, os grants dele e da tabela de versão do Alembic, e a função
-de lookup.
+Os conjuntos esperados abaixo crescem junto com as migrations. A 0003 acrescentou as policies de
+`cce_auth`, os grants de coluna dele, o SELECT do runtime em `alembic_version` e a função de lookup
+de API key, que é verificada por inteiro: dono, SECURITY DEFINER, `search_path`, `row_security`,
+volatilidade, tipo de retorno, o md5 do corpo e quem pode executá-la. Uma função SECURITY DEFINER
+que não esteja na lista é um problema.
 """
 
 from __future__ import annotations
 
 import asyncio
 import sys
-from typing import Final
+from typing import Any, Final
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -38,7 +40,7 @@ INFRASTRUCTURE_TABLES: Final = ("alembic_version",)
 
 _CONTEXT = "NULLIF(current_setting('app.tenant_id'::text, true), ''::text)"
 # Texto devolvido por pg_policies no PostgreSQL 17 (a versão fixada do projeto).
-EXPECTED_POLICIES: Final = {
+EXPECTED_POLICIES: Final[dict[tuple[str, str], dict[str, Any]]] = {
     ("tenants", "tenant_isolation"): {
         "permissive": "PERMISSIVE",
         "cmd": "ALL",
@@ -53,19 +55,66 @@ EXPECTED_POLICIES: Final = {
         "qual": f"(tenant_id = ({_CONTEXT})::uuid)",
         "with_check": f"(tenant_id = ({_CONTEXT})::uuid)",
     },
+    # Leitura global de `cce_auth`, só SELECT; é o que o definer da função de lookup usa.
+    ("tenants", "auth_lookup"): {
+        "permissive": "PERMISSIVE",
+        "cmd": "SELECT",
+        "roles": ["cce_auth"],
+        "qual": "true",
+        "with_check": None,
+    },
+    ("api_keys", "auth_lookup"): {
+        "permissive": "PERMISSIVE",
+        "cmd": "SELECT",
+        "roles": ["cce_auth"],
+        "qual": "true",
+        "with_check": None,
+    },
 }
 
 # (tabela, coluna ou None para a tabela inteira, role, privilégio): TUDO que não é o dono.
 _TENANT_UPDATABLE = ("default_currency", "locale", "name", "timezone", "updated_at")
 _API_KEY_READABLE = ("created_at", "expires_at", "id", "label", "revoked_at", "scopes", "tenant_id")
+# `cce_auth` lê COLUNAS (nunca a tabela inteira), as mesmas que o lookup usa.
+_AUTH_TENANT_COLUMNS = ("id", "status")
+_AUTH_API_KEY_COLUMNS = (
+    "expires_at",
+    "id",
+    "pepper_version",
+    "revoked_at",
+    "scopes",
+    "secret_digest",
+    "tenant_id",
+)
 EXPECTED_GRANTS: Final = frozenset(
     {("tenants", None, "cce_app", "SELECT")}
     | {("tenants", column, "cce_app", "UPDATE") for column in _TENANT_UPDATABLE}
     | {("api_keys", column, "cce_app", "SELECT") for column in _API_KEY_READABLE}
+    | {("tenants", column, "cce_auth", "SELECT") for column in _AUTH_TENANT_COLUMNS}
+    | {("api_keys", column, "cce_auth", "SELECT") for column in _AUTH_API_KEY_COLUMNS}
+    # Readiness (ticket 07): o runtime lê a versão aplicada, só SELECT.
+    | {("alembic_version", None, "cce_app", "SELECT")}
 )
 
-# Funções (schema.nome(args)) que o runtime deve executar, cada uma com GRANT EXECUTE explícito.
-EXPECTED_RUNTIME_FUNCTIONS: Final[frozenset[str]] = frozenset()
+# Funções (schema.nome(args)) esperadas, com tudo o que importa para a segurança delas.
+# `source_md5` é o md5 do corpo em `LOOKUP_BODY`, na migration 0003 (um teste confere os dois).
+EXPECTED_FUNCTIONS: Final[dict[str, dict[str, Any]]] = {
+    "cce_private.lookup_api_key(p_key_id uuid)": {
+        "owner": "cce_auth",
+        "security_definer": True,
+        "volatility": "s",
+        "config": ("row_security=on", "search_path=pg_catalog, pg_temp"),
+        "result": "TABLE(key_id uuid, tenant_id uuid, secret_digest bytea, "
+        "pepper_version smallint, scopes text[])",
+        "source_md5": "1550322de697f10cd73176868f57b67e",
+        # além do dono, que sempre pode executar o que possui
+        "execute": ("cce_app",),
+    },
+}
+# Funções que o runtime deve executar, cada uma com GRANT EXECUTE explícito.
+EXPECTED_RUNTIME_FUNCTIONS: Final[frozenset[str]] = frozenset(
+    identity for identity, spec in EXPECTED_FUNCTIONS.items() if "cce_app" in spec["execute"]
+)
 FUNCTION_OWNERS: Final = (OWNER, "cce_auth")
 
 _ROLE_ATTRIBUTES = """
@@ -125,16 +174,21 @@ _SCHEMA_PRIVILEGES = """
 """
 _FUNCTIONS = """
     select n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')',
-           pg_get_userbyid(p.proowner),
-           exists (
-               select 1
-               from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
-               where a.grantee = 0 and a.privilege_type = 'EXECUTE'
-           ),
+           pg_get_userbyid(p.proowner), p.prosecdef, p.provolatile::text, p.proleakproof,
+           coalesce(p.proconfig, array[]::text[]), pg_get_function_result(p.oid), md5(p.prosrc),
            has_function_privilege('cce_app', p.oid, 'EXECUTE')
     from pg_proc p
     join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = any(:schemas)
+"""
+_FUNCTION_EXECUTE = """
+    select n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')',
+           case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end,
+           a.is_grantable
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+    where n.nspname = any(:schemas) and a.privilege_type = 'EXECUTE'
 """
 _OWNED_BY_APP = """
     select count(*)
@@ -293,22 +347,72 @@ async def _schema_privileges(connection: AsyncConnection) -> list[str]:
     return problems
 
 
+def _expected_function_problems(
+    identity: str,
+    spec: dict[str, Any],
+    row: tuple[Any, ...],
+    grantees: dict[str, bool],
+) -> list[str]:
+    _, owner, definer, volatility, leakproof, config, result, source_md5, _ = row
+    problems: list[str] = []
+    where = f"function {identity}"
+    if owner != spec["owner"]:
+        problems.append(f"{where}: owned by {owner} instead of {spec['owner']}")
+    if definer != spec["security_definer"]:
+        problems.append(f"{where}: is not SECURITY DEFINER")
+    if volatility != spec["volatility"]:
+        problems.append(f"{where}: volatility differs from the expected one")
+    if leakproof:
+        problems.append(f"{where}: is LEAKPROOF")
+    if "search_path=pg_catalog, pg_temp" not in config:
+        problems.append(f"{where}: search_path is not pg_catalog, pg_temp")
+    if "row_security=on" not in config:
+        problems.append(f"{where}: row_security is not on")
+    if set(config) - set(spec["config"]):
+        problems.append(f"{where}: has settings other than the expected ones")
+    if result != spec["result"]:
+        problems.append(f"{where}: result type differs from the expected one")
+    if source_md5 != spec["source_md5"]:
+        problems.append(f"{where}: definition differs from the expected one")
+    allowed = {owner, *spec["execute"]}
+    for grantee, grantable in sorted(grantees.items()):
+        if grantee not in allowed:
+            problems.append(f"unexpected EXECUTE: {grantee} on {identity}")
+        elif grantable and grantee != owner:
+            problems.append(f"unexpected grant option: {grantee} EXECUTE on {identity}")
+    for grantee in spec["execute"]:
+        if grantee not in grantees:
+            problems.append(f"missing EXECUTE: {grantee} on {identity}")
+    return problems
+
+
 async def _functions(connection: AsyncConnection) -> list[str]:
     problems: list[str] = []
-    executable_by_app: set[str] = set()
-    for identity, owner, public, app in (
-        await connection.execute(text(_FUNCTIONS), {"schemas": list(SCHEMAS)})
+    params = {"schemas": list(SCHEMAS)}
+    execute: dict[str, dict[str, bool]] = {}
+    for identity, grantee, grantable in (
+        await connection.execute(text(_FUNCTION_EXECUTE), params)
     ).all():
+        execute.setdefault(identity, {})[grantee] = bool(grantable)
+    found: set[str] = set()
+    for row in (await connection.execute(text(_FUNCTIONS), params)).all():
+        identity, owner, definer, *_, app = row
+        found.add(identity)
+        if identity in EXPECTED_FUNCTIONS:
+            problems += _expected_function_problems(
+                identity, EXPECTED_FUNCTIONS[identity], tuple(row), execute.get(identity, {})
+            )
+            continue
         if owner not in FUNCTION_OWNERS:
             problems.append(f"function {identity}: owned by {owner}")
-        if public:
+        if definer:
+            problems.append(f"function {identity}: unexpected SECURITY DEFINER")
+        if "PUBLIC" in execute.get(identity, {}):
             problems.append(f"unexpected EXECUTE: PUBLIC on {identity}")
         if app:
-            executable_by_app.add(identity)
-            if identity not in EXPECTED_RUNTIME_FUNCTIONS:
-                problems.append(f"unexpected EXECUTE: cce_app on {identity}")
-    for identity in sorted(EXPECTED_RUNTIME_FUNCTIONS - executable_by_app):
-        problems.append(f"missing EXECUTE: cce_app on {identity}")
+            problems.append(f"unexpected EXECUTE: cce_app on {identity}")
+    for identity in sorted(set(EXPECTED_FUNCTIONS) - found):
+        problems.append(f"missing function: {identity}")
     return problems
 
 

@@ -4,7 +4,7 @@ Como subir a infraestrutura local do CCE (PostgreSQL 17, Redis 7.4 e a imagem da
 
 ## Estado atual
 
-Existem a infraestrutura e o schema (migration `0001`: `cce.tenants` e `cce.api_keys`). A API ainda não roda: o serviço `api` falha ao iniciar porque `cce.main` não existe (ticket 07). Nada mascara isso com um health falso. Suba `postgres` e `redis`, e rode `migrate` quando precisar do schema.
+Existem a infraestrutura, o schema (migrations `0001` a `0003`: `cce.tenants`, `cce.api_keys`, a RLS e a função de lookup de API key) e a CLI administrativa `cce-admin` (ver `tenant-bootstrap.md`). A API ainda não roda: o serviço `api` falha ao iniciar porque `cce.main` não existe (ticket 07). Nada mascara isso com um health falso. Suba `postgres` e `redis`, e rode `migrate` quando precisar do schema.
 
 ## Pré-requisitos
 
@@ -56,7 +56,7 @@ Pelo Compose, o serviço `migrate` roda `alembic upgrade head` uma vez e termina
 docker compose run --rm --no-deps migrate
 ```
 
-As tabelas pertencem a `cce_migrator`, e a migration `0001` não concede nada a `cce_app` nem a `cce_auth`: sem RLS ainda (ticket 05), uma leitura do runtime enxergaria todos os Tenants.
+As tabelas pertencem a `cce_migrator`. A migration `0002` ativa a RLS e dá ao runtime o mínimo; a `0003` cria a função de lookup de API key e dá a `cce_auth` a leitura de colunas que ela usa.
 
 ## Ambiente de teste
 
@@ -80,7 +80,7 @@ Os testes de integração e de migration recusam rodar fora de `CCE_ENV=test` e 
 | `postgres` | sim | Bootstrap e infraestrutura local; nunca a API |
 | `cce_migrator` | sim | Dono dos schemas; migrations e CLI administrativa |
 | `cce_app` | sim | Runtime da API |
-| `cce_auth` | não | Dono da função de lookup de API key (tickets seguintes) |
+| `cce_auth` | não | Dono da função de lookup de API key (`cce_private.lookup_api_key`, migration `0003`) |
 
 O serviço `api` recebe só a credencial de `cce_app`. A URL do migrator e a senha do `postgres` ficam fora dele.
 
