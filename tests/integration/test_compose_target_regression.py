@@ -90,3 +90,59 @@ def test_compose_mutations_are_refused_when_dotenv_and_process_environment_diver
         pytest.fail("the mutating test was not refused at setup, before build/downgrade/run/exec")
     if "does not target the validated disposable database" not in output:
         pytest.fail("the setup error is not the Compose target check")
+
+
+MIGRATE_DSN_FRAGMENT = "cce_migrator:$CCE_MIGRATOR_DB_PASSWORD@postgres:5432"
+ALTERED_ENDPOINTS = {
+    "another host": "cce_migrator:$CCE_MIGRATOR_DB_PASSWORD@other-db.invalid:5432",
+    "another internal port": "cce_migrator:$CCE_MIGRATOR_DB_PASSWORD@postgres:6543",
+}
+
+
+@pytest.mark.parametrize("target", MUTATING_TARGETS)
+@pytest.mark.parametrize("alteration", list(ALTERED_ENDPOINTS))
+def test_compose_mutations_are_refused_when_the_migrate_endpoint_is_not_the_internal_postgres(
+    tmp_path: Path, target: str, alteration: str
+) -> None:
+    """Cópia do docker-compose.yml em que só host ou só porta do DSN do `migrate` mudam.
+
+    O banco continua `cce_test`, mas a instância é outra; como o CLI permite `upgrade`, a guarda do
+    banco por nome não bastaria. A recusa tem de vir no setup, antes de build, downgrade, run e
+    exec.
+    """
+    original = (ROOT / "docker-compose.yml").read_text()
+    assert original.count(MIGRATE_DSN_FRAGMENT) == 1
+    altered = tmp_path / "docker-compose.altered.yml"
+    altered.write_text(original.replace(MIGRATE_DSN_FRAGMENT, ALTERED_ENDPOINTS[alteration]))
+    real = read_dotenv(compose_env_file())
+    environment = {k: v for k, v in os.environ.items() if not k.upper().startswith("CCE_")}
+    environment.update(
+        CCE_ENV_FILE=str(compose_env_file()),
+        CCE_TEST_COMPOSE_FILE=str(altered),
+    )
+    forbidden = {
+        "admin password": real["CCE_POSTGRES_ADMIN_PASSWORD"],
+        "app password": real["CCE_APP_DB_PASSWORD"],
+        "migrator password": real["CCE_MIGRATOR_DB_PASSWORD"],
+        "migrator DSN": real["CCE_MIGRATOR_DATABASE_URL"],
+        "app DSN": real["CCE_DATABASE_URL"],
+        "altered host": "other-db.invalid",
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", target, "-q", "-p", "no:cacheprovider", "-rA", "-vv"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=ROOT,
+        env=environment,
+    )
+    output = result.stdout + result.stderr
+
+    leaked = [label for label, value in forbidden.items() if value and value in output]
+    if leaked:
+        pytest.fail(f"the refusal output exposes: {', '.join(leaked)}")
+    if result.returncode == 0 or "ERROR at setup" not in output:
+        pytest.fail("the mutating test was not refused at setup, before build/downgrade/run/exec")
+    if "does not target the validated disposable database" not in output:
+        pytest.fail("the setup error is not the Compose target check")

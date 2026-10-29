@@ -41,6 +41,14 @@ def rendered(
                     ),
                 }
             },
+            "api": {
+                "environment": {
+                    "CCE_ENV": environment,
+                    "CCE_DATABASE_URL": (
+                        f"postgresql+asyncpg://cce_app:{PASSWORD}@postgres:5432/{migrate_database}"
+                    ),
+                }
+            },
             "postgres": {
                 "environment": {"POSTGRES_DB": postgres_database},
                 "ports": [
@@ -160,3 +168,92 @@ def test_the_check_refuses_when_compose_config_fails_or_is_unreadable(
     with pytest.raises(pytest.fail.Exception) as excinfo:
         assert_compose_targets_validated_database(settings)
     assert PASSWORD not in str(excinfo.value)
+
+
+# --- endpoint interno: o banco com o mesmo nome em outra instância não conta ------------------
+
+OTHER = "other-db.invalid"
+
+
+def migrate_url(host: str = "postgres", port: str = "5432", user: str = "cce_migrator") -> str:
+    return f"postgresql+asyncpg://{user}:{PASSWORD}@{host}{port}/cce_test"
+
+
+def api_url(host: str = "postgres", port: str = "5432", user: str = "cce_app") -> str:
+    return f"postgresql+asyncpg://{user}:{PASSWORD}@{host}{port}/cce_test"
+
+
+def with_url(service: str, variable: str, url: str) -> dict[str, Any]:
+    config = rendered()
+    config["services"][service]["environment"][variable] = url
+    return config
+
+
+MIGRATE = ("migrate", "CCE_MIGRATOR_DATABASE_URL")
+API = ("api", "CCE_DATABASE_URL")
+
+DIVERGENT_ENDPOINTS = [
+    # host
+    (MIGRATE, migrate_url(host=OTHER)),
+    (MIGRATE, migrate_url(host="POSTGRES")),
+    (MIGRATE, migrate_url(host="Postgres")),
+    (MIGRATE, migrate_url(host="postgres.example.com")),
+    (MIGRATE, migrate_url(host="localhost")),
+    (MIGRATE, migrate_url(host="127.0.0.1")),
+    (MIGRATE, migrate_url(host="[::1]")),
+    # porta interna
+    (MIGRATE, migrate_url(port=":6543")),
+    (MIGRATE, migrate_url(port=":5433")),
+    (MIGRATE, migrate_url(port="")),
+    # userinfo diferente do role esperado
+    (MIGRATE, migrate_url(user="postgres")),
+    (MIGRATE, migrate_url(user="cce_app")),
+    (MIGRATE, migrate_url(user="cce_auth")),
+    # query
+    (MIGRATE, migrate_url() + "?host=" + OTHER),
+    (MIGRATE, migrate_url() + "?port=6543"),
+    # o mesmo vale para o DSN runtime do serviço api
+    (API, api_url(host=OTHER)),
+    (API, api_url(host="POSTGRES")),
+    (API, api_url(host="localhost")),
+    (API, api_url(port=":6543")),
+    (API, api_url(port="")),
+    (API, api_url(user="cce_migrator")),
+    (API, api_url(user="postgres")),
+    (API, api_url() + "?host=" + OTHER),
+]
+
+
+@pytest.mark.parametrize(("target", "url"), DIVERGENT_ENDPOINTS)
+def test_a_service_that_reaches_another_endpoint_is_refused_without_echoing_it(
+    target: tuple[str, str], url: str
+) -> None:
+    problems = compose_target_problems(with_url(*target, url), VALIDATED)
+
+    assert problems
+    text = " ".join(problems)
+    for fragment in (PASSWORD, OTHER, "6543", "5433", "localhost", "cce_app:", "cce_migrator:"):
+        assert fragment not in text
+
+
+def test_the_internal_endpoint_is_exactly_postgres_5432_for_every_service() -> None:
+    assert compose_target_problems(rendered(), VALIDATED) == []
+
+
+def test_any_other_service_with_a_database_url_is_refused() -> None:
+    config = rendered()
+    config["services"]["worker"] = {
+        "environment": {"CCE_DATABASE_URL": api_url(host=OTHER), "UNRELATED": "x"}
+    }
+
+    assert compose_target_problems(config, VALIDATED)
+
+    config["services"]["worker"] = {"environment": {"SOME_DB": api_url()}}
+    assert compose_target_problems(config, VALIDATED)  # nome de variável desconhecido
+
+
+def test_a_service_without_database_urls_is_ignored() -> None:
+    config = rendered()
+    config["services"]["redis"] = {"environment": {"CCE_REDIS_URL": "redis://redis:6379/0"}}
+
+    assert compose_target_problems(config, VALIDATED) == []
