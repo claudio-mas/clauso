@@ -308,6 +308,8 @@ def _usage_message(error: Exception) -> str:
         return message
     if "extra argument" in message:
         return "unexpected extra argument"
+    if message.startswith("No such command"):
+        return "unknown command"
     return message
 
 
