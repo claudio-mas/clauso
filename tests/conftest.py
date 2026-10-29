@@ -10,6 +10,7 @@ from db_support import (
     assert_disposable_database,
     run_alembic,
 )
+from sensitive_plugin import pytest_configure, pytest_runtest_makereport
 from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -23,6 +24,8 @@ from cce.shared.config import (
 )
 
 ENV_FILE_HINT = "run from the repository root with CCE_ENV_FILE=.env.test"
+
+__all__ = ["pytest_configure", "pytest_runtest_makereport"]  # hooks de sensitive_plugin
 
 
 @pytest.fixture
