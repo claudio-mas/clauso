@@ -115,6 +115,45 @@ PLUGIN = textwrap.dedent(
 
         service.IssuedKey.__repr__ = leaky_issued
         service.IssuedKey.__str__ = leaky_issued
+
+    GENERIC = os.environ.get("KEY_GENERIC_DEFECT", "")
+    if GENERIC:
+        target_name, mode = GENERIC.split(":")
+
+        def record_arguments(args, kwargs):
+            for value in [*args, *kwargs.values()]:
+                if isinstance(value, str):
+                    record(value, value.split("_", 3)[-1])
+                elif isinstance(value, bytes):
+                    record(value.hex(), base64.b64encode(value).decode(), repr(value))
+                elif isinstance(value, dict):
+                    for item in value.values():
+                        if hasattr(item, "get_secret_value"):
+                            record(item.get_secret_value())
+
+        def wrap(original):
+            def defective(*args, **kwargs):
+                record_arguments(args, kwargs)
+                if mode == "raises-valueerror":
+                    raise ValueError(f"unexpected failure for {args!r} {kwargs!r}")
+                if mode == "raises-keyerror":
+                    raise KeyError(f"unexpected failure for {args!r} {kwargs!r}")
+                result = original(*args, **kwargs)
+                if isinstance(result, str):
+                    record(result)
+                elif isinstance(result, bytes):
+                    record(result.hex(), repr(result))
+                elif hasattr(result, "raw_key"):
+                    record(result.raw_key.get_secret_value())
+                    record(getattr(result, "secret_digest", b"").hex())
+                return {"returns-none": None, "returns-empty": "", "returns-wrong-type": 12345}[mode]
+
+            return defective
+
+        for name in (target_name,):
+            for module in (security, service):
+                if hasattr(module, name):
+                    setattr(module, name, wrap(getattr(module, name)))
     """
 )
 
@@ -129,24 +168,32 @@ DEFECTS = [
 
 
 def run_key_tests(
-    tmp_path: Path, defect: str
+    tmp_path: Path, defect: str, generic: str = ""
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """Roda o arquivo de testes de chave com defeitos injetados e devolve os valores gravados.
+
+    `KEY_TEST_TARGET` e `KEY_RECORD_DIR` (ambiente do processo externo) só existem para os
+    meta-testes, que apontam um alvo vazador de propósito e precisam ler os valores gravados.
+    """
+    target = os.environ.get("KEY_TEST_TARGET", "tests/unit/test_key_security.py")
+    record_dir = Path(os.environ.get("KEY_RECORD_DIR", str(tmp_path)))
     plugin = tmp_path / "keydefects.py"
     plugin.write_text(PLUGIN)
-    record = tmp_path / "recorded.txt"
+    record = record_dir / "recorded.txt"
     environment = {
         "PATH": os.environ.get("PATH", ""),
         "HOME": os.environ.get("HOME", ""),
         "PYTHONPATH": str(tmp_path),
         "KEY_RECORD_FILE": str(record),
         "KEY_DEFECT": defect,
+        "KEY_GENERIC_DEFECT": generic,
     }
     result = subprocess.run(
         [
             sys.executable,
             "-m",
             "pytest",
-            "tests/unit/test_key_security.py",
+            target,
             "-p",
             "keydefects",
             "-p",
