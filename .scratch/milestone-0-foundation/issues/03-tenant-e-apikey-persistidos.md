@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** in-review
+**Status:** in-progress
 
 **Plano:** Tarefa 3 e seções 8 e 9. **Vocabulário:** Tenant (`CONTEXT.md`).
 
@@ -31,3 +31,12 @@ Problemas:
 Opiniões sobre os pontos submetidos: (1) `0001` sem nenhum `GRANT` a `cce_app`/`cce_auth` é correto e suficiente nesta etapa, e não substitui a RLS do ADR-0003 para o runtime futuro; (2) o CHECK de timezone com validação estrita na aplicação é aceitável, mas `ZoneInfo` aceita alguns aliases que existem na tzdata, então não promete só nomes `Area/Location`; (3) os defaults de banco são coerentes, documentados e testados; (4) o regex `\S` é adequado, com sugestão de incluir tab e newline nos testes negativos de `label`; (5) há caminhos para outro banco, conforme os itens 1 e 2.
 
 Limites declarados pelo Revisor: 157 testes de integração passaram, 1 falha e 6 erros (os sete testes de imagem e `migrate` ficaram limitados pelo sandbox dele, que não consegue escrever em `~/.docker/buildx/activity`); esses sete vêm do Regente (suíte completa: 164 passed). Migrations (7 passed), unit (360), Ruff, mypy estrito e lock passaram. O ticket volta a `in-progress`.
+
+### 2026-10-28 — Parecer do Revisor (Lupa), rodada 2: mudanças necessárias
+
+PR #5, head `6d9c2cb`. Os três achados da rodada 1 foram corrigidos e confirmados por contraprova em memória (restaurar a guarda antiga fez falhar 14 casos de query; remover a guarda do `env.py` fez falhar 9 casos de `downgrade`; trocar o ambiente controlado por herança e usar o runner antigo fez as regressões acusarem os vazamentos). O Revisor aceitou o nome `cce_testing_prod` (prefixo `cce_test*` é o contrato do ticket) e o "falhar fechado" para chamadas programáticas de `upgrade` fora de `test`. Resta um achado:
+
+1. **[importante]** `tests/integration/test_migrate_service.py:35-42` e `tests/integration/support.py:26-27,47-60`: a divergência entre configuração validada e executada ainda existe no serviço `migrate` do Compose. A fixture `migrator_settings` carrega o dotenv mais overrides `CCE_*` do processo; `run_compose` remove esses overrides e volta ao dotenv, sem validar `CCE_ENV` e o banco efetivos do serviço. Contraprova com `docker compose config --format json`, sem migration: dotenv temporário com `CCE_ENV=local` e `CCE_POSTGRES_DB=cce` e ambiente do pytest com `CCE_ENV=test` e `CCE_MIGRATOR_DATABASE_URL` para `cce_test`: a guarda aprova `test`/`cce_test`, mas o JSON renderizado de `services.migrate.environment` traz `CCE_ENV=local` e o DSN com banco `cce`. O teste faz `downgrade` no banco validado e depois pode executar `upgrade` no banco não descartável do Compose. O projeto `cce-test` isola containers e volumes, mas não garante que o nome do banco seja `cce_test*`.
+   Correção sugerida: antes de qualquer etapa mutante do teste do serviço, renderizar de forma controlada a configuração efetiva do Compose (capturando a saída, nunca imprimindo valores), exigir `CCE_ENV=test` e aplicar a guarda ao DSN efetivo do `migrate`, com coerência com o banco validado pelas fixtures; ou montar explicitamente o ambiente de teste validado para a execução do Compose, com as variáveis de interpolação pertinentes. Preservar o uso legítimo de `upgrade` local pelo Compose fora dos testes (não proibir `upgrade` local no `env.py`). Acrescentar regressão com dotenv `local`/`cce` e overrides `test`/`cce_test`, provando recusa antes de build, run e `downgrade`, sem segredos em argv ou saída. Não resolver removendo a filtragem de `CCE_*` de forma indiscriminada.
+
+Limites declarados pelo Revisor: migrations (8 passed) e integração (162 passed, 1 failed, 6 errors) rodaram; os sete testes de imagem e `migrate` falharam só por escrita proibida em `~/.docker/buildx/activity`, e ele não os reproduziu nem escalonou. Esses sete vêm do Regente (suíte completa: 169 passed). Unit (411), Ruff, mypy estrito e lock passaram. O ticket volta a `in-progress`. Esta foi a rodada 2 de 3.
