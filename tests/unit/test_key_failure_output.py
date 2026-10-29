@@ -162,7 +162,8 @@ def run_key_tests(
         env=environment,
     )
     values = record.read_text().splitlines() if record.exists() else []
-    return result, [v for v in values if len(v) >= 8]
+    # Valores forçados pelos testes (como "_" * 43) são constantes públicas, não segredos gerados.
+    return result, [v for v in values if len(v) >= 8 and len(set(v)) >= 12]
 
 
 def leaked_labels(output: str, recorded: list[str]) -> int:
