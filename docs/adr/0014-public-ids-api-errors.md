@@ -1,7 +1,7 @@
 # ADR-0014: IDs públicos com prefixo sobre UUID4 e códigos de erro estáveis
 
 **Data:** 30/10/2026
-**Status:** Proposto
+**Status:** Aceito (30/10/2026)
 
 ## Contexto
 

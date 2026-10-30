@@ -1,7 +1,7 @@
 # ADR-0015: Redis como dependência auxiliar, sem fonte de verdade nem broker fictício
 
 **Data:** 30/10/2026
-**Status:** Proposto
+**Status:** Aceito (30/10/2026)
 
 ## Contexto
 
