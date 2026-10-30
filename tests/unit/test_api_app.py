@@ -9,20 +9,26 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+from uuid import uuid4
 
 import httpx
 import pytest
 from api_support import BASE_URL, REQUEST_ID, require_error, require_trace_id
 from asgi_lifespan import LifespanManager
 from pydantic import SecretStr
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.types import Message
 
 from cce import main
 from cce.api.dependencies import bearer_token
 from cce.api.health import check_within
+from cce.identity.tenants import repository
+from cce.identity.tenants.service import TenantService
+from cce.integrations.api_keys.authentication import Principal
 from cce.main import create_app
 from cce.shared.config import Settings
+from cce.shared.redis import build_redis
 
 pytestmark = pytest.mark.usefixtures("clean_cce_env")
 
@@ -428,3 +434,53 @@ async def test_a_failing_dependency_is_unavailable_and_a_healthy_one_is_ok() -> 
 
     assert await check_within(fails, 1) is False
     assert await check_within(answers, 1) is True
+
+
+# --- Tenant invisível e Redis com TLS -----------------------------------------------------------
+
+
+async def test_a_tenant_that_is_not_visible_is_a_not_found_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def nothing(*_: object) -> None:
+        return None
+
+    monkeypatch.setattr(repository, "get_current", nothing)
+    principal = Principal(tenant_id=uuid4(), key_id=uuid4(), scopes=frozenset({"tenant:read"}))
+    app = create_app(make_settings())
+
+    @app.get("/missing")
+    async def missing() -> None:
+        await TenantService.get_current(cast(AsyncSession, None), principal)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url=BASE_URL
+    ) as test_client:
+        response = await test_client.get("/missing")
+
+    require_error(response, 404, "NOT_FOUND", "invisible Tenant")
+    assert str(principal.tenant_id) not in response.text
+
+
+async def test_redis_over_tls_verifies_the_certificate_and_the_hostname(tmp_path: Path) -> None:
+    settings = remote_settings("production", tmp_path)
+    settings = settings.model_copy(update={"redis_ca_file": settings.database_ca_file})
+
+    client = build_redis(settings)
+    try:
+        options = client.connection_pool.connection_kwargs
+        assert options["ssl_cert_reqs"] == "required"
+        assert options["ssl_check_hostname"] is True
+        assert options["ssl_ca_certs"] == str(settings.database_ca_file)
+        assert options["socket_connect_timeout"] == 1
+        assert options["socket_timeout"] == 1
+    finally:
+        await client.aclose()
+
+
+async def test_redis_without_tls_gets_no_tls_options() -> None:
+    client = build_redis(make_settings())
+    try:
+        assert "ssl_ca_certs" not in client.connection_pool.connection_kwargs
+    finally:
+        await client.aclose()
