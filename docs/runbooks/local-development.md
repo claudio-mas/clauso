@@ -4,7 +4,7 @@ Como subir a infraestrutura local do CCE (PostgreSQL 17, Redis 7.4 e a imagem da
 
 ## Estado atual
 
-Existem a infraestrutura, o schema (migrations `0001` a `0003`: `cce.tenants`, `cce.api_keys`, a RLS e a função de lookup de API key) e a CLI administrativa `cce-admin` (ver `tenant-bootstrap.md`). A API ainda não roda: o serviço `api` falha ao iniciar porque `cce.main` não existe (ticket 07). Nada mascara isso com um health falso. Suba `postgres` e `redis`, e rode `migrate` quando precisar do schema.
+Existem a infraestrutura, o schema (migrations `0001` a `0003`: `cce.tenants`, `cce.api_keys`, a RLS e a função de lookup de API key), a CLI administrativa `cce-admin` (ver `tenant-bootstrap.md`) e a API HTTP (`/health/live`, `/health/ready`, `/api/v1/auth/context` e `/api/v1/tenant`). O formato dos erros está em `docs/api/errors.md`.
 
 ## Pré-requisitos
 
@@ -72,6 +72,27 @@ docker compose --env-file .env.test -p cce-test down -v
 Os dois ambientes publicam as mesmas portas em loopback (5432 e 6379). Não suba os dois ao mesmo tempo.
 
 Os testes de integração e de migration recusam rodar fora de `CCE_ENV=test` e de um banco `cce_test*` (o nome é validado parseando a URL, e a recusa nunca mostra o DSN). Os de migration fazem `downgrade base` e `upgrade` no banco de teste, por isso rodam antes e separados dos demais. Eles usam conexões reais como `cce_app` e `cce_migrator`. O teste da imagem constrói `cce-api:test` e o remove no fim.
+
+## API
+
+```bash
+docker compose up -d --wait api          # sobe postgres, redis, roda migrate e espera a API
+curl -s http://127.0.0.1:8000/health/live
+curl -s http://127.0.0.1:8000/health/ready
+```
+
+A API escuta só em `127.0.0.1:8000`. O Swagger fica em `/docs` quando `CCE_DOCS_ENABLED=true` (padrão em `local` e `test`; a configuração recusa ativá-lo em staging e production). CORS só responde às origins exatas de `CCE_ALLOWED_ORIGINS`, sem credenciais.
+
+### Smoke com dois Tenants
+
+Crie dois Tenants com `cce-admin tenant create` (ver `tenant-bootstrap.md`) e passe as chaves iniciais pelo ambiente, nunca como argumento:
+
+```bash
+read -rs CCE_SMOKE_KEY_A && read -rs CCE_SMOKE_KEY_B && export CCE_SMOKE_KEY_A CCE_SMOKE_KEY_B
+python3 scripts/smoke.py   # CCE_SMOKE_BASE_URL, padrão http://127.0.0.1:8000
+```
+
+O smoke confere liveness, readiness, o `401` sem chave, que as chaves são de Tenants distintos, que `X-Tenant-ID` é ignorado, que o `PATCH` de A não altera B e que um campo proibido dá `422`. Ele renomeia o Tenant A. A saída é uma linha por etapa e nunca mostra chave nem corpo de resposta. O teste `tests/integration/test_smoke.py` faz o mesmo no projeto `cce-test`: constrói a imagem, sobe a API pelo Compose, emite as chaves e roda o smoke.
 
 ## Roles e credenciais
 
