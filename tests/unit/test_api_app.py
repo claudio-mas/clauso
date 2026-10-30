@@ -40,7 +40,7 @@ def make_settings(**overrides: Any) -> Settings:
         "api_key_peppers": {1: SecretStr(PEPPER)},
     }
     values.update(overrides)
-    return Settings(_env_file=None, **values)  # type: ignore[call-arg]
+    return Settings(_env_file=None, **values)
 
 
 def remote_settings(environment: str, tmp_path: Path) -> Settings:
@@ -81,6 +81,7 @@ async def test_a_wrong_method_is_a_method_not_allowed_envelope(client: httpx.Asy
     response = await client.delete("/api/v1/tenant")
 
     require_error(response, 405, "METHOD_NOT_ALLOWED", "wrong method")
+    assert "GET" in response.headers["allow"]  # o Starlette cita só a primeira rota do path
 
 
 async def test_an_unexpected_error_is_an_internal_error_without_its_message(
@@ -224,7 +225,7 @@ async def test_a_token_in_the_query_string_or_cookie_does_not_authenticate(
     response = await client.get(
         "/api/v1/auth/context",
         params={"access_token": token, "api_key": token},
-        cookies={"access_token": token},
+        headers={"Cookie": f"access_token={token}"},
     )
 
     require_error(response, 401, "AUTHENTICATION_FAILED", "token outside the header")
