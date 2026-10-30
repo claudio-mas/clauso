@@ -4,7 +4,7 @@
 
 **Blocked by:** 06
 
-**Status:** in-progress
+**Status:** in-review
 
 **Plano:** Tarefa 7 e seções 12 e 13.2. **Vocabulário:** Tenant, Host (`CONTEXT.md`).
 
