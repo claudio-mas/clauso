@@ -20,6 +20,18 @@ CURRENCIES = ("BRL", "USD", "EUR")
 LOCALES = ("pt-BR", "en-US")
 SLUG_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
 
+# Constraints cuja violação é um conflito esperado (HTTP 409), com o campo público que ela protege.
+# Os nomes seguem a convenção de `Base` e a migration 0001; qualquer outra violação é erro interno.
+CONFLICT_FIELDS = {
+    "uq_tenants_slug": "slug",
+    "ck_tenants_name_not_blank": "name",
+    "ck_tenants_slug_format": "slug",
+    "ck_tenants_status_allowed": "status",
+    "ck_tenants_currency_allowed": "default_currency",
+    "ck_tenants_locale_allowed": "locale",
+    "ck_tenants_timezone_known": "timezone",
+}
+
 
 def _one_of(column: str, values: tuple[str, ...]) -> str:
     return f"{column} IN ({', '.join(repr(value) for value in values)})"
