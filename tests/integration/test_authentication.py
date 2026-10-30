@@ -21,7 +21,7 @@ import pytest
 from db_support import OpenSession, OpenTenantSession, sensitive_components
 from key_support import acall_or_fail, aerror_of
 from pydantic import SecretStr
-from seeding import SeededTenant, apply_context, seed_key
+from seeding import SeededTenant, apply_context, emit_key, seed_key
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -32,7 +32,7 @@ from cce.integrations.api_keys.authentication import (
     Principal,
     authenticate_api_key,
 )
-from cce.integrations.api_keys.service import IssuedKey, issue_key_material
+from cce.integrations.api_keys.service import issue_key_material
 from cce.shared.config import Settings
 from cce.shared.db.engine import build_engine, build_session_factory
 from cce.shared.security import generate_key
@@ -46,22 +46,6 @@ pytestmark = [
 ]
 
 Factory = async_sessionmaker[AsyncSession]
-
-
-async def emit_key(
-    engine: AsyncEngine, settings: Settings, tenant: SeededTenant, **overrides: Any
-) -> tuple[SeededTenant, IssuedKey]:
-    """Emite uma chave com o código de produção e grava o digest dela para o Tenant."""
-    issued = issue_key_material(settings.env, settings.api_key_peppers, 1)
-    keyed = await seed_key(
-        engine,
-        tenant,
-        id=issued.key_id,
-        secret_digest=issued.secret_digest,
-        pepper_version=issued.pepper_version,
-        **overrides,
-    )
-    return keyed, issued
 
 
 async def authenticate(raw_key: str | None, settings: Settings, factory: Factory) -> Principal:

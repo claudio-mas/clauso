@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import pytest
@@ -20,8 +21,10 @@ from seeding import (
     SeededTenant,
     create_commit_failure,
     create_probe,
+    create_tenant_failure,
     drop_commit_failure,
     drop_probe,
+    drop_tenant_failure,
     remove_tenant,
     remove_tenants_with_slug_prefix,
     seed_key,
@@ -47,6 +50,10 @@ from cce.shared.config import (
     load_migration_settings,
     load_settings,
 )
+
+if TYPE_CHECKING:
+    import httpx
+    from fastapi import FastAPI
 
 ENV_FILE_HINT = "run from the repository root with CCE_ENV_FILE=.env.test"
 
@@ -306,3 +313,35 @@ async def rls_probe(migrator_engine: AsyncEngine) -> AsyncIterator[None]:
         yield
     finally:
         await drop_probe(migrator_engine)
+
+
+@pytest.fixture
+async def tenant_failure(
+    migrator_engine: AsyncEngine,
+) -> AsyncIterator[Callable[[str, UUID], Awaitable[None]]]:
+    """`await tenant_failure(kind, tenant_id)`: faz falhar a alteração do Tenant até o fim."""
+
+    async def inject(kind: str, tenant_id: UUID) -> None:
+        await create_tenant_failure(migrator_engine, kind, tenant_id)
+
+    try:
+        yield inject
+    finally:
+        await drop_tenant_failure(migrator_engine)
+
+
+@pytest.fixture
+def api_settings(db_settings: Settings, migrated_database: None) -> Settings:
+    """Settings da API de teste, com pool de UMA conexão: toda requisição reutiliza a mesma."""
+    return db_settings.model_copy(
+        update={"db_pool_size": 1, "db_max_overflow": 0, "db_pool_timeout": 5}
+    )
+
+
+@pytest.fixture
+async def api(api_settings: Settings) -> AsyncIterator[tuple[FastAPI, httpx.AsyncClient]]:
+    """A aplicação de produção com lifespan, contra o banco e o Redis de teste."""
+    from api_support import running_app
+
+    async with running_app(api_settings) as running:
+        yield running
