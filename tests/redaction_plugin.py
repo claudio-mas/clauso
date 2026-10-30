@@ -93,7 +93,9 @@ def collect_secrets(environment: dict[str, str], dotenv: Path | None) -> tuple[s
         upper = name.upper()
         if not upper.startswith("CCE_") or not value:
             continue
-        if any(part in upper for part in _SECRET_NAMES):
+        # `CCE_API_KEY_ACTIVE_PEPPER_VERSION` é um número, não um segredo: mascarar o valor dela
+        # trocaria todo "1" do relatório (inclusive em "401") por `***`.
+        if any(part in upper for part in _SECRET_NAMES) and not upper.endswith("_VERSION"):
             found.add(value)
             found.update(_from_json(value))
         if upper.endswith("_URL") and "://" in value:

@@ -55,7 +55,7 @@ PLUGIN = textwrap.dedent(
 
     def generate_key(key_id, environment):
         raw = original_generate(key_id, environment)
-        record(raw, raw.rsplit("_", 1)[-1])
+        record(raw, raw[-43:])  # o segredo tem tamanho fixo e pode conter "_"
         return raw
 
 
@@ -91,7 +91,7 @@ PLUGIN = textwrap.dedent(
 
     async def authenticate(raw_key, settings, session_factory):
         if isinstance(raw_key, str) and len(raw_key) > 60:
-            record(raw_key, raw_key.rsplit("_", 1)[-1])
+            record(raw_key, raw_key[-43:])
         if DEFECT == "unexpected-exception":
             raise RuntimeError("boom " + str(raw_key) + " " + repr(settings.api_key_peppers))
         try:

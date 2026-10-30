@@ -6,6 +6,7 @@ que usam estes helpers também levam o marcador `sensitive`, que é a segunda ba
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from typing import cast
 
@@ -45,6 +46,19 @@ async def acall_or_fail[T](call: Callable[[], Awaitable[T]], what: str) -> T:
         failure = type(error).__name__
     require(done, f"{what} raised an unexpected {failure}")
     return cast(T, result)
+
+
+# Mesmo formato de `cce.shared.security`: grupos de tamanho fixo, nunca divisão por "_", porque o
+# segredo base64url também pode conter "_".
+_KEY_FORMAT = re.compile(r"cce_[a-z]{3}_[0-9a-f]{32}_(?P<secret>[A-Za-z0-9_-]{43})", re.ASCII)
+
+
+def secret_of(raw_key: str) -> str:
+    """O segredo inteiro (43 caracteres) de uma chave bem formada; texto fixo na falha."""
+    match = _KEY_FORMAT.fullmatch(raw_key)
+    require(match is not None, "secret_of: the key is not well formed")
+    assert match is not None
+    return match["secret"]
 
 
 def must_parse(raw_key: str, environment: Environment) -> ParsedKey:

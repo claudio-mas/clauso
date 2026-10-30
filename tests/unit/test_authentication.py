@@ -24,7 +24,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from integration.support import assert_no_leaks, require
-from key_support import acall_or_fail, aerror_of, call_or_fail
+from key_support import acall_or_fail, aerror_of, call_or_fail, secret_of
 from pydantic import SecretStr
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
@@ -176,7 +176,7 @@ def key_forbidden(key: IssuedKey) -> dict[str, str]:
     raw = key.raw_key.get_secret_value()
     return {
         "key": raw,
-        "secret": raw.rsplit("_", 1)[-1] if "_" in raw else raw,
+        "secret": secret_of(raw),
         "digest": key.secret_digest.hex(),
         "digest repr": repr(key.secret_digest),
         "pepper 1": PEPPER_1,
