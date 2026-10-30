@@ -4,7 +4,7 @@
 
 **Blocked by:** 07
 
-**Status:** in-review
+**Status:** in-progress
 
 **Plano:** Tarefa 8 e seções 12.5 e 13.1.
 
