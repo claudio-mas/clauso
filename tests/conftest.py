@@ -64,6 +64,8 @@ def pytest_configure(config: pytest.Config) -> None:
     sensitive_plugin.pytest_configure(config)
     # Em toda falha, a senha de um DSN que o driver exibiu nos argumentos sai como `***`.
     config.pluginmanager.import_plugin("redaction_plugin")
+    # Fixture `log_output`: os logs JSON da aplicação num buffer, com a configuração restaurada.
+    config.pluginmanager.import_plugin("log_support")
 
 
 @pytest.fixture

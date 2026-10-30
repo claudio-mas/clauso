@@ -22,9 +22,11 @@ from cce.api.errors import install_error_handlers
 from cce.api.health import load_expected_heads
 from cce.api.health import router as health_router
 from cce.api.middleware import REQUEST_ID_HEADER, TRACE_ID_HEADER, RequestContextMiddleware
+from cce.api.openapi import install_openapi
 from cce.api.router import api_router
 from cce.shared.config import Settings, load_settings
 from cce.shared.db.engine import build_engine, build_session_factory
+from cce.shared.logging import configure_logging
 from cce.shared.redis import build_redis
 
 TITLE = "Commercial Closing Engine API"
@@ -34,6 +36,7 @@ CORS_HEADERS = ("Authorization", "Content-Type")
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings if settings is not None else load_settings()
+    configure_logging(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -62,6 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_error_handlers(app)
     app.include_router(health_router)
     app.include_router(api_router)
+    install_openapi(app)
     if settings.allowed_origins:
         app.add_middleware(
             CORSMiddleware,

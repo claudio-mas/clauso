@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cce.api.dependencies import get_tenant_session, require_scope
+from cce.api.errors import error_responses
 from cce.identity.tenants.schemas import TenantPatch, TenantRead
 from cce.identity.tenants.service import TenantService
 from cce.integrations.api_keys.authentication import Principal
@@ -22,6 +23,7 @@ Session = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
     response_model=TenantRead,
     description=f"Dados da empresa autenticada. Scope exigido: `{TENANT_READ}`.",
     openapi_extra={"x-cce-required-scopes": [TENANT_READ]},
+    responses=error_responses(401, 403, 404, 500, 503, scope=TENANT_READ),
 )
 async def read_tenant(
     principal: Annotated[Principal, Depends(require_scope(TENANT_READ))], session: Session
@@ -37,6 +39,7 @@ async def read_tenant(
         f"Scope exigido: `{TENANT_WRITE}`."
     ),
     openapi_extra={"x-cce-required-scopes": [TENANT_WRITE]},
+    responses=error_responses(401, 403, 404, 409, 422, 500, 503, scope=TENANT_WRITE),
 )
 async def patch_tenant(
     principal: Annotated[Principal, Depends(require_scope(TENANT_WRITE))],
