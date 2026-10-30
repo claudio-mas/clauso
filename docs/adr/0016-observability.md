@@ -1,7 +1,7 @@
 # ADR-0016: Observabilidade inicial com logs redigidos por allowlist, `request_id` e `trace_id`
 
 **Data:** 30/10/2026
-**Status:** Proposto
+**Status:** Aceito (30/10/2026)
 
 ## Contexto
 
