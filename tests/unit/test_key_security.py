@@ -24,7 +24,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from integration.support import assert_no_leaks, require
-from key_support import call_or_fail, error_of, must_parse
+from key_support import call_or_fail, error_of, must_parse, secret_of
 from pydantic import SecretStr
 
 from cce.integrations.api_keys.service import IssuedKey, issue_key_material
@@ -610,3 +610,12 @@ def test_no_document_presents_hmac_as_a_human_password_hash() -> None:
                 offenders.append(f"{path.relative_to(ROOT)}:{number}")
 
     assert offenders == []
+
+
+def test_the_test_helper_extracts_the_whole_secret_even_with_underscores() -> None:
+    # Regressão: dividir a chave por "_" devolvia só o fim de um segredo base64url com "_", um
+    # texto curto que podia coincidir com qualquer saída e acusar vazamento falso.
+    secret = "ab_cd-" + "x" * 37
+    raw_key = f"cce_dev_{uuid4().hex}_{secret}"
+
+    require(secret_of(raw_key) == secret, "the helper did not return the whole secret")

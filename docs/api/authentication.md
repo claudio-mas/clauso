@@ -4,7 +4,7 @@ Como um Host se identifica na API do CCE e o que acontece com a chave. A decisã
 
 ## Estado atual
 
-Estão implementados o material da chave, a função de lookup, a autenticação (`authenticate_api_key`, que devolve um `Principal`), a CLI que emite e revoga chaves e a API HTTP: `GET /api/v1/auth/context`, `GET /api/v1/tenant` e `PATCH /api/v1/tenant`. O formato dos erros está em [`errors.md`](errors.md).
+Estão implementados o material da chave, a função de lookup, a autenticação (`authenticate_api_key`, que devolve um `Principal`), a CLI que emite e revoga chaves e a API HTTP: `GET /api/v1/auth/context`, `GET /api/v1/tenant` e `PATCH /api/v1/tenant`. O formato dos erros está em [`errors.md`](errors.md). Em `local` e `test`, o contrato completo, com o esquema Bearer e os scopes de cada operação, está em `/openapi.json`.
 
 ## A chave
 
@@ -38,16 +38,116 @@ Authorization: Bearer cce_dev_0123456789abcdef0123456789abcdef_<segredo>
 
 ## Contexto da chave
 
+Basta uma chave válida, com qualquer scope. A resposta nunca traz o digest nem o segredo.
+
 ```http
 GET /api/v1/auth/context HTTP/1.1
-Authorization: Bearer cce_dev_<id>_<segredo>
+Host: api.cce.example
+Authorization: Bearer cce_dev_0123456789abcdef0123456789abcdef_<segredo>
 ```
 
-```json
-{"tenant_id": "ten_<32 hex>", "key_id": "key_<32 hex>", "scopes": ["tenant:read", "tenant:write"]}
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+X-Request-ID: req_0123456789abcdef0123456789abcdef
+X-Trace-ID: 4bf92f3577b34da6a3ce929d0e0e4736
+
+{"tenant_id": "ten_9f1c2d3e4b5a69788796a5b4c3d2e1f0", "key_id": "key_0123456789abcdef0123456789abcdef", "scopes": ["tenant:read", "tenant:write"]}
 ```
 
-Basta uma chave válida, com qualquer scope. A resposta nunca traz o digest nem o segredo.
+O `key_id` é o identificador da própria chave (o `<id>` dela, com o prefixo `key_`). Todo exemplo desta página usa valores ilustrativos.
+
+## Exemplos completos
+
+### Ler o próprio Tenant (`tenant:read`)
+
+```http
+GET /api/v1/tenant HTTP/1.1
+Host: api.cce.example
+Authorization: Bearer cce_dev_0123456789abcdef0123456789abcdef_<segredo>
+```
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+X-Request-ID: req_1123456789abcdef0123456789abcdef
+X-Trace-ID: 5bf92f3577b34da6a3ce929d0e0e4736
+
+{"id": "ten_9f1c2d3e4b5a69788796a5b4c3d2e1f0", "name": "Clínica Exemplo", "slug": "clinica-exemplo", "status": "active", "plan": "development", "default_currency": "BRL", "timezone": "America/Sao_Paulo", "locale": "pt-BR", "created_at": "2026-10-30T12:00:00+00:00", "updated_at": "2026-10-30T12:00:00+00:00"}
+```
+
+### Alterar o próprio Tenant (`tenant:write`)
+
+Só `name`, `default_currency`, `timezone` e `locale`; qualquer outro campo dá `422`.
+
+```http
+PATCH /api/v1/tenant HTTP/1.1
+Host: api.cce.example
+Authorization: Bearer cce_dev_0123456789abcdef0123456789abcdef_<segredo>
+Content-Type: application/json
+
+{"name": "Clínica Exemplo Centro", "timezone": "America/Recife"}
+```
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+X-Request-ID: req_2123456789abcdef0123456789abcdef
+X-Trace-ID: 6bf92f3577b34da6a3ce929d0e0e4736
+
+{"id": "ten_9f1c2d3e4b5a69788796a5b4c3d2e1f0", "name": "Clínica Exemplo Centro", "slug": "clinica-exemplo", "status": "active", "plan": "development", "default_currency": "BRL", "timezone": "America/Recife", "locale": "pt-BR", "created_at": "2026-10-30T12:00:00+00:00", "updated_at": "2026-10-30T12:05:00+00:00"}
+```
+
+### Chave recusada
+
+Qualquer motivo (ausente, malformada, de outro ambiente, inexistente, segredo errado, expirada, revogada, Tenant suspenso) dá a mesma resposta:
+
+```http
+HTTP/1.1 401 Unauthorized
+Content-Type: application/json
+WWW-Authenticate: Bearer
+X-Request-ID: req_3123456789abcdef0123456789abcdef
+X-Trace-ID: 7bf92f3577b34da6a3ce929d0e0e4736
+
+{"error": {"code": "AUTHENTICATION_FAILED", "message": "Authentication failed.", "details": {}, "request_id": "req_3123456789abcdef0123456789abcdef"}}
+```
+
+### Scope ausente
+
+Uma chave só com `tenant:read` tentando o `PATCH` acima:
+
+```http
+HTTP/1.1 403 Forbidden
+Content-Type: application/json
+X-Request-ID: req_4123456789abcdef0123456789abcdef
+X-Trace-ID: 8bf92f3577b34da6a3ce929d0e0e4736
+
+{"error": {"code": "FORBIDDEN", "message": "The API key does not have the required scope.", "details": {"required_scopes": ["tenant:write"]}, "request_id": "req_4123456789abcdef0123456789abcdef"}}
+```
+
+### Banco indisponível na autenticação
+
+```http
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/json
+X-Request-ID: req_5123456789abcdef0123456789abcdef
+X-Trace-ID: 9bf92f3577b34da6a3ce929d0e0e4736
+
+{"error": {"code": "DEPENDENCY_UNAVAILABLE", "message": "A required dependency is unavailable.", "details": {}, "request_id": "req_5123456789abcdef0123456789abcdef"}}
+```
+
+Nesse caso a chave não foi julgada: tente de novo mais tarde, sem trocar de chave.
+
+### Com `curl`
+
+```bash
+# A chave vem de uma variável de ambiente e o cabeçalho é lido da entrada padrão (`-H @-`):
+# ela não fica no histórico do shell nem nos argumentos do processo.
+curl -sS https://api.cce.example/api/v1/auth/context \
+  -H @- <<< "Authorization: Bearer ${CCE_API_KEY:?defina CCE_API_KEY}"
+```
+
+A chave nunca aparece nos logs do CCE: a requisição é registrada com o template da rota, o status, a duração e os IDs públicos do Tenant e da chave ([ADR-0016](../adr/0016-observability.md)).
 
 ## Scopes
 

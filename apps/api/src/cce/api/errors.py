@@ -14,13 +14,13 @@ from __future__ import annotations
 import logging
 import traceback
 from collections.abc import Mapping, Sequence
-from contextvars import ContextVar
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 import asyncpg  # type: ignore[import-untyped]
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy.exc import (
     DBAPIError,
     IntegrityError,
@@ -34,12 +34,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from cce.identity.tenants.model import CONFLICT_FIELDS
 from cce.identity.tenants.service import TenantNotFound
 from cce.integrations.api_keys.authentication import AuthenticationFailed, DependencyUnavailable
+from cce.shared.logging import UNEXPECTED_ERROR_EVENT, current_request_id
 
 LOGGER_NAME = "cce.api.errors"
 _logger = logging.getLogger(LOGGER_NAME)
-
-# Preenchido pelo middleware no início de cada requisição e limpo no fim.
-request_id_var: ContextVar[str | None] = ContextVar("cce_request_id", default=None)
 
 # Constraint conhecida -> campo público. Só estas viram 409; qualquer outra é 500.
 _CONFLICT_FIELDS: Final[Mapping[str, str]] = CONFLICT_FIELDS
@@ -65,6 +63,22 @@ _STATUS_CODES: Final[Mapping[int, str]] = {
     503: "DEPENDENCY_UNAVAILABLE",
 }
 _CHALLENGE: Final = {"WWW-Authenticate": "Bearer"}
+
+ErrorCode = Literal[
+    "AUTHENTICATION_FAILED",
+    "FORBIDDEN",
+    "NOT_FOUND",
+    "METHOD_NOT_ALLOWED",
+    "CONFLICT",
+    "VALIDATION_ERROR",
+    "INTERNAL_ERROR",
+    "DEPENDENCY_UNAVAILABLE",
+]
+EXAMPLE_REQUEST_ID: Final = "req_0123456789abcdef0123456789abcdef"
+_EXAMPLE_DETAILS: Final[Mapping[int, Mapping[str, Any]]] = {
+    409: {"field": "name"},
+    422: {"errors": [{"field": "name", "type": "string_too_short"}]},
+}
 
 # Erros de conexão: o banco não respondeu. Chegam crus do asyncpg ou embrulhados pelo SQLAlchemy.
 _UNREACHABLE = (
@@ -107,6 +121,56 @@ class ApiError(Exception):
         return self.code
 
 
+class ErrorBody(BaseModel):
+    """O erro: código estável, mensagem fixa por código, `details` seguros e o `request_id`."""
+
+    code: ErrorCode
+    message: str
+    details: dict[str, Any]
+    request_id: str | None
+
+
+class ErrorEnvelope(BaseModel):
+    """Forma de toda resposta de erro da API."""
+
+    error: ErrorBody
+
+
+def error_responses(*status_codes: int, scope: str | None = None) -> dict[int | str, Any]:
+    """Documentação OpenAPI dos erros de uma operação: envelope, exemplo e cabeçalhos.
+
+    `scope` é o scope exigido pela rota, citado no exemplo do 403.
+    """
+    responses: dict[int | str, Any] = {}
+    for status_code in status_codes:
+        code = _STATUS_CODES[status_code]
+        details = _EXAMPLE_DETAILS.get(status_code, {})
+        if status_code == 403:
+            details = {"required_scopes": [scope] if scope else []}
+        example = {
+            "error": {
+                "code": code,
+                "message": _MESSAGES[code],
+                "details": details,
+                "request_id": EXAMPLE_REQUEST_ID,
+            }
+        }
+        response: dict[str, Any] = {
+            "model": ErrorEnvelope,
+            "description": f"`{code}`: {_MESSAGES[code]}",
+            "content": {"application/json": {"example": example}},
+        }
+        if status_code == 401:
+            response["headers"] = {
+                "WWW-Authenticate": {
+                    "description": "Sempre `Bearer`, para qualquer motivo de recusa.",
+                    "schema": {"type": "string"},
+                }
+            }
+        responses[status_code] = response
+    return responses
+
+
 def forbidden(required_scopes: Sequence[str]) -> ApiError:
     return ApiError(403, {"required_scopes": sorted(required_scopes)})
 
@@ -117,7 +181,7 @@ def error_body(code: str, message: str, details: Mapping[str, Any] | None = None
             "code": code,
             "message": message,
             "details": dict(details or {}),
-            "request_id": request_id_var.get(),
+            "request_id": current_request_id(),
         }
     }
 
@@ -141,7 +205,7 @@ def log_unexpected(error: BaseException) -> None:
         for frame in traceback.extract_tb(error.__traceback__)
     ]
     _logger.error(
-        "unexpected error",
+        UNEXPECTED_ERROR_EVENT,
         extra={"error_type": type(error).__name__, "frames": frames},
     )
 

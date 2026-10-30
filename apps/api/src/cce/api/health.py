@@ -22,6 +22,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
+from cce.shared.logging import MIGRATION_HEADS_UNREADABLE_EVENT
+
 LOGGER_NAME = "cce.api.health"
 _logger = logging.getLogger(LOGGER_NAME)
 
@@ -42,7 +44,7 @@ def load_expected_heads(config_path: Path = DEFAULT_ALEMBIC_CONFIG) -> frozenset
         return frozenset(ScriptDirectory.from_config(config).get_heads())
     except Exception as error:
         _logger.warning(
-            "migration heads could not be read", extra={"error_type": type(error).__name__}
+            MIGRATION_HEADS_UNREADABLE_EVENT, extra={"error_type": type(error).__name__}
         )
         return frozenset()
 

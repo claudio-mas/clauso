@@ -203,6 +203,7 @@ def test_secrets_come_from_passwords_peppers_and_urls_only() -> None:
             "CCE_LOG_LEVEL": "INFO-LEVEL",
             "OTHER_PASSWORD": "not-a-cce-variable",
             "CCE_SHORT_PASSWORD": "abc",
+            "CCE_API_KEY_ACTIVE_PEPPER_VERSION": "7",
         },
         None,
     )
@@ -218,6 +219,7 @@ def test_secrets_come_from_passwords_peppers_and_urls_only() -> None:
     }
     assert expected <= set(found)
     assert not {"testing-env-value", "INFO-LEVEL", "not-a-cce-variable"} & set(found)
+    assert "7" not in found  # a versão ativa do pepper é um número, não um segredo
     assert found == tuple(sorted(found, key=len, reverse=True))
 
 

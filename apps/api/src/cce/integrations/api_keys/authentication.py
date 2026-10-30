@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from cce.integrations.api_keys.repository import KeyCandidate, lookup_candidate
 from cce.shared.config import Settings
+from cce.shared.logging import PEPPER_VERSION_MISSING_EVENT
 from cce.shared.security import (
     InvalidKeyError,
     UnknownPepperVersion,
@@ -100,7 +101,7 @@ async def authenticate_api_key(
         pepper = pepper_bytes(settings.api_key_peppers, candidate.pepper_version)
     except UnknownPepperVersion:
         _logger.error(
-            "api key pepper version is not configured",
+            PEPPER_VERSION_MISSING_EVENT,
             extra={"key_id": str(candidate.key_id), "pepper_version": candidate.pepper_version},
         )
         _compare_with_sentinel(raw_key, active)

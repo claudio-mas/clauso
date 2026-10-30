@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from cce.api.dependencies import get_principal
+from cce.api.errors import error_responses
 from cce.identity.tenants.routes import router as tenant_router
 from cce.integrations.api_keys.authentication import Principal
 from cce.shared.ids import encode_key_id, encode_tenant_id
@@ -29,6 +30,7 @@ auth_router = APIRouter(prefix="/auth", tags=["auth"])
     response_model=AuthContext,
     description="O Tenant público, o ID da chave e os scopes dela. Basta uma chave válida.",
     openapi_extra={"x-cce-required-scopes": []},
+    responses=error_responses(401, 500, 503),
 )
 async def auth_context(principal: Annotated[Principal, Depends(get_principal)]) -> AuthContext:
     return AuthContext(

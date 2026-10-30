@@ -26,6 +26,8 @@ from cce.integrations.api_keys.authentication import (
     authenticate_api_key,
 )
 from cce.shared.db.session import tenant_session
+from cce.shared.ids import encode_key_id, encode_tenant_id
+from cce.shared.logging import bind_principal
 
 _bearer_scheme = HTTPBearer(
     auto_error=False,
@@ -55,7 +57,10 @@ async def get_principal(
     if token is None:
         raise AuthenticationFailed
     state = request.app.state
-    return await authenticate_api_key(token, state.settings, state.session_factory)
+    principal = await authenticate_api_key(token, state.settings, state.session_factory)
+    # Só uma chave verificada entra no contexto de log; o middleware o limpa no fim da requisição.
+    bind_principal(encode_tenant_id(principal.tenant_id), encode_key_id(principal.key_id))
+    return principal
 
 
 def require_scope(scope: str) -> Callable[..., Awaitable[Principal]]:
