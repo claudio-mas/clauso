@@ -44,9 +44,12 @@ from cce.shared.config import Settings
 from cce.shared.ids import encode_key_id, encode_tenant_id
 from cce.shared.logging import (
     ALLOWED_FIELDS,
+    OTHER_METHOD,
     REDACTED,
+    UNRECOGNIZED_EVENT,
     configure_logging,
     current_request_id,
+    normalize_method,
     redact,
     request_context,
 )
@@ -123,10 +126,12 @@ def test_the_console_format_is_also_filtered_and_redacted(log_output: LogOutput)
     log_output.install(settings)
 
     logging.getLogger("cce.test").warning(
-        f"console {DSN}", extra={"route": DSN, "customer_email": EMAIL}
+        "console.line", extra={"route": DSN, "customer_email": EMAIL}
     )
+    logging.getLogger("cce.test").warning(f"console {DSN} {EMAIL}")
 
-    require("console" in log_output.text, "the console line is missing")
+    require("console.line" in log_output.text, "the console line is missing")
+    require(UNRECOGNIZED_EVENT in log_output.text, "the free-text console line was kept")
     assert_no_leaks(log_output.text, {"DSN password": PASSWORD, "e-mail": EMAIL}, "console log")
 
 
@@ -277,7 +282,7 @@ def test_an_allowlisted_field_is_redacted_recursively_through_the_pipeline(
     assert_no_leaks(log_output.text, forbidden, "pipeline log")
 
 
-def test_the_event_is_the_message_template_without_arguments(log_output: LogOutput) -> None:
+def test_a_message_that_is_not_an_event_name_never_reaches_the_log(log_output: LogOutput) -> None:
     settings = synthetic_settings()
     forbidden = forbidden_values(settings)
     log_output.install(settings)
@@ -286,8 +291,8 @@ def test_the_event_is_the_message_template_without_arguments(log_output: LogOutp
     logger.error("lookup failed for %s with %r", forbidden["key"], settings)
     logger.error(settings)
 
-    require(len(log_output.events("lookup failed for %s with %r")) == 1, "the template is lost")
-    require(len(log_output.events("<Settings>")) == 1, "an object message was not reduced")
+    # Nem o template livre nem um objeto como mensagem viram `event`: só nomes de evento.
+    require(len(log_output.events(UNRECOGNIZED_EVENT)) == 2, "a free-text message was kept")
     assert_no_leaks(log_output.text, forbidden, "template log")
 
 
@@ -337,13 +342,14 @@ def test_the_raw_uvicorn_access_log_is_disabled_even_after_uvicorn_configures_it
         '%s - "%s %s HTTP/%s" %d', "127.0.0.1:1", "GET", f"/x?access_token={raw_key}", "1.1", 200
     )
     logging.getLogger("uvicorn.error").info("Uvicorn running on %s", "http://0.0.0.0:8000")
+    uvicorn_lines = [line for line in log_output.lines() if line.get("logger") == "uvicorn.error"]
 
     captured = capsys.readouterr()
     everything = log_output.text + captured.out + captured.err
     assert_no_leaks(everything, {"key": raw_key, "access path": "/x?"}, "uvicorn output")
     require(
-        len(log_output.events("Uvicorn running on %s")) == 1,
-        "uvicorn's own messages do not go through the JSON pipeline",
+        [line.get("event") for line in uvicorn_lines] == [UNRECOGNIZED_EVENT],
+        "uvicorn's own messages do not go through the JSON pipeline as a fixed marker",
     )
 
 
@@ -483,7 +489,7 @@ async def test_an_unexpected_error_logs_its_type_and_the_500_under_the_same_ids(
 ) -> None:
     response = await client.get("/boom")
 
-    error = log_line(log_output, "unexpected error")
+    error = log_line(log_output, "api.unexpected_error")
     request = log_line(log_output, "http.request")
     require(error.get("error_type") == "RuntimeError", "the error type is missing")
     require(request.get("status_code") == 500, "the request line is not 500")
@@ -583,3 +589,184 @@ def test_configure_logging_can_run_again_without_duplicating_lines(log_output: L
     logging.getLogger("cce.test").warning("once")
 
     require(len(log_output.events("once")) == 1, "the line was written more than once")
+
+
+# --- só nomes de evento e valores no formato esperado (rodada 2) -----------------------------
+
+# Sentinelas sintéticas: nenhuma é dado real, e nenhuma aparece em ID de teste nem em mensagem de
+# falha (os `ids` são fixos e `require`/`assert_no_leaks` só citam rótulos).
+DIGEST_HEX = "ab" * 32
+PASSWORD_TEXT = "sentinela-sintetica-de-senha"
+CNPJ = "12.345.678/0001-95"
+FREE_TEXT_MESSAGES = [
+    f"customer {PERSON} {EMAIL} {DOCUMENT}",
+    "secret_digest=" + DIGEST_HEX,
+    "senha=" + PASSWORD_TEXT,
+    "customer %s with %s" % (PERSON, EMAIL),  # noqa: UP031 - mensagem já interpolada
+    f"digest {DIGEST_HEX}",
+    f"tenant.{EMAIL}",
+    "a" * 65,
+]
+FREE_TEXT_IDS = [
+    "personal-data",
+    "secret-digest",
+    "senha",
+    "percent-interpolated",
+    "bare-digest",
+    "dotted-email",
+    "too-long",
+]
+SENTINELS = {
+    "name": PERSON,
+    "e-mail": EMAIL,
+    "document": DOCUMENT,
+    "CNPJ": CNPJ,
+    "digest": DIGEST_HEX,
+    "password": PASSWORD_TEXT,
+}
+
+
+@pytest.mark.parametrize("message", FREE_TEXT_MESSAGES, ids=FREE_TEXT_IDS)
+def test_a_free_text_message_becomes_a_fixed_marker(log_output: LogOutput, message: str) -> None:
+    log_output.install(synthetic_settings())
+
+    logging.getLogger("cce.test").error(message)
+
+    lines = log_output.lines()
+    require(len(lines) == 1, "the line is missing")
+    require(lines[0].get("event") == UNRECOGNIZED_EVENT, "a free-text message was kept")
+    require(lines[0].get("logger") == "cce.test", "the logger was lost")
+    assert_no_leaks(log_output.text, SENTINELS | {"too long": "a" * 65}, "free-text log")
+
+
+@pytest.mark.parametrize(
+    "event", ["tenant.created", "api.unexpected_error", "http.request", "api_key.issued"]
+)
+def test_event_names_are_kept(log_output: LogOutput, event: str) -> None:
+    log_output.install(synthetic_settings())
+
+    logging.getLogger("cce.test").info(event)
+
+    require(len(log_output.events(event)) == 1, "an event name was not kept")
+
+
+def test_allowlisted_fields_keep_only_values_in_their_format(log_output: LogOutput) -> None:
+    log_output.install(synthetic_settings())
+    free = f"customer {PERSON} {EMAIL} senha={PASSWORD_TEXT}"
+
+    logging.getLogger("cce.test").error(
+        "fields.checked",
+        extra={
+            "route": free,
+            "method": DOCUMENT,
+            "error_type": "secret_digest=" + DIGEST_HEX,
+            "request_id": EMAIL,
+            "trace_id": DIGEST_HEX,
+            "tenant_id": f"ten_{EMAIL}",
+            "key_id": CNPJ,
+            "status_code": DOCUMENT,
+            "duration_ms": PERSON,
+            "pepper_version": PASSWORD_TEXT,
+            "frames": [free, {"digest": DIGEST_HEX}, f"app.py:12:{PERSON}"],
+        },
+    )
+
+    line = log_line(log_output, "fields.checked")
+    require(line.get("method") == OTHER_METHOD, "an unknown method was not reduced to the marker")
+    assert_no_leaks(log_output.text, SENTINELS, "allowlisted fields")
+
+
+def test_well_formed_values_of_allowlisted_fields_are_kept(log_output: LogOutput) -> None:
+    log_output.install(synthetic_settings())
+    values = {
+        "route": "/api/v1/things/{thing_id}",
+        "method": "PATCH",
+        "error_type": "RuntimeError",
+        "request_id": "req_" + "0" * 32,
+        "trace_id": "1" * 32,
+        "tenant_id": "ten_" + "2" * 32,
+        "key_id": "key_" + "3" * 32,
+        "status_code": 409,
+        "duration_ms": 1.25,
+        "pepper_version": 2,
+        "frames": ["/app/cce/api/errors.py:12:handler"],
+    }
+
+    logging.getLogger("cce.test").error("fields.kept", extra=values)
+
+    line = log_line(log_output, "fields.kept")
+    for name, value in values.items():
+        require(line.get(name) == value, f"the well-formed {name} was changed")
+
+
+def test_key_id_as_a_uuid_is_kept(log_output: LogOutput) -> None:
+    log_output.install(synthetic_settings())
+    key_id = str(uuid4())
+
+    logging.getLogger("cce.test").error("fields.uuid", extra={"key_id": key_id})
+
+    require(log_line(log_output, "fields.uuid").get("key_id") == key_id, "a UUID key_id was lost")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "secret_digest=" + DIGEST_HEX,
+        "digest: " + DIGEST_HEX,
+        "stored " + DIGEST_HEX,
+        "senha=" + PASSWORD_TEXT,
+        "chave: " + PASSWORD_TEXT,
+        "password = " + PASSWORD_TEXT,
+        f"contact {EMAIL}",
+        f"cpf {DOCUMENT}",
+        f"cnpj {CNPJ}",
+        "cpf 12345678909",
+    ],
+    ids=[
+        "secret-digest",
+        "digest-colon",
+        "bare-hex",
+        "senha",
+        "chave",
+        "password-spaces",
+        "e-mail",
+        "cpf",
+        "cnpj",
+        "cpf-digits",
+    ],
+)
+def test_text_redaction_covers_digests_passwords_and_personal_data(text: str) -> None:
+    rendered = json.dumps(redact({"frames": [text], "nested": {"value": text}}))
+
+    assert_no_leaks(rendered, SENTINELS | {"CPF digits": "12345678909"}, "redacted text")
+
+
+@pytest.mark.parametrize(
+    "method",
+    [DOCUMENT, "SENHA-" + PASSWORD_TEXT, "PROPFIND"],
+    ids=["document", "secret", "webdav"],
+)
+async def test_an_unknown_http_method_is_logged_as_a_fixed_marker(
+    client: httpx.AsyncClient, log_output: LogOutput, method: str
+) -> None:
+    await client.request(method, "/api/v1/tenant")
+
+    line = log_line(log_output, "http.request")
+    require(line.get("method") == OTHER_METHOD, "an unknown method was logged")
+    assert_no_leaks(log_output.text, SENTINELS, "unknown method log")
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def test_a_known_http_method_is_logged_as_is(
+    client: httpx.AsyncClient, log_output: LogOutput, method: str
+) -> None:
+    await client.request(method, "/health/live")
+
+    require(log_line(log_output, "http.request").get("method") == method, "the method was lost")
+
+
+def test_only_the_exact_known_method_names_are_kept() -> None:
+    require(normalize_method("get") == OTHER_METHOD, "a lowercase method was kept")
+    require(normalize_method(None) == OTHER_METHOD, "a missing method was not reduced")
+    require(normalize_method(b"GET") == OTHER_METHOD, "a bytes method was kept")
+    require(normalize_method("CONNECT") == "CONNECT", "a known method was lost")

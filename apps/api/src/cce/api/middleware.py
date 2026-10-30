@@ -9,7 +9,8 @@ do Tenant e da chave. O contexto é definido no início, sobrescrevendo qualquer
 no fim, inclusive depois de autenticação recusada ou de erro. O Tenant nunca vem de cabeçalho. No M0
 o `trace_id` é só correlação local (sem exportação OpenTelemetry; ADR-0016).
 
-No fim de cada requisição sai uma linha `http.request` com método, template da rota (`unmatched`
+No fim de cada requisição sai uma linha `http.request` com o método (só os métodos HTTP conhecidos;
+qualquer outro, que é texto livre do cliente, vira `OTHER`), o template da rota (`unmatched`
 quando nenhuma rota casou), status e duração. Nunca o path, a query string, cabeçalhos ou corpo.
 
 Uma exceção que nenhum handler tratou vira um 500 padronizado, se a resposta ainda não começou, e
@@ -32,7 +33,12 @@ from starlette.routing import compile_path
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from cce.api.errors import internal_error_body, log_unexpected
-from cce.shared.logging import UNMATCHED_ROUTE, RequestContext, request_context
+from cce.shared.logging import (
+    UNMATCHED_ROUTE,
+    RequestContext,
+    normalize_method,
+    request_context,
+)
 
 LOGGER_NAME = "cce.api.request"
 _logger = logging.getLogger(LOGGER_NAME)
@@ -125,7 +131,7 @@ class RequestContextMiddleware:
                 _logger.info(
                     "http.request",
                     extra={
-                        "method": scope.get("method"),
+                        "method": normalize_method(scope.get("method")),
                         "route": route_template(scope),
                         "status_code": status_code,
                         "duration_ms": round((time.perf_counter() - started) * 1000, 3),

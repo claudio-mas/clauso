@@ -174,6 +174,11 @@ def test_a_real_uvicorn_never_writes_the_raw_access_log(api_settings: Settings) 
             httpx.get(f"{base_url}/api/v1/customers/{EMAIL}", params={"cpf": DOCUMENT}),
             httpx.get(f"{base_url}{CONTEXT}", headers=headers),
         ]
+        # Método HTTP livre com um documento: o servidor pode até recusar, mas o log não o guarda.
+        try:
+            httpx.request(DOCUMENT, f"{base_url}{TENANT}")
+        except httpx.TransportError:
+            pass
     finally:
         output = stop(server)
 

@@ -205,7 +205,7 @@ def log_unexpected(error: BaseException) -> None:
         for frame in traceback.extract_tb(error.__traceback__)
     ]
     _logger.error(
-        "unexpected error",
+        "api.unexpected_error",
         extra={"error_type": type(error).__name__, "frames": frames},
     )
 

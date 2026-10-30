@@ -42,7 +42,7 @@ def load_expected_heads(config_path: Path = DEFAULT_ALEMBIC_CONFIG) -> frozenset
         return frozenset(ScriptDirectory.from_config(config).get_heads())
     except Exception as error:
         _logger.warning(
-            "migration heads could not be read", extra={"error_type": type(error).__name__}
+            "health.migration_heads_unreadable", extra={"error_type": type(error).__name__}
         )
         return frozenset()
 

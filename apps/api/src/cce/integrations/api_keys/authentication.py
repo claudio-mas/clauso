@@ -100,7 +100,7 @@ async def authenticate_api_key(
         pepper = pepper_bytes(settings.api_key_peppers, candidate.pepper_version)
     except UnknownPepperVersion:
         _logger.error(
-            "api key pepper version is not configured",
+            "api_key.pepper_version_missing",
             extra={"key_id": str(candidate.key_id), "pepper_version": candidate.pepper_version},
         )
         _compare_with_sentinel(raw_key, active)
