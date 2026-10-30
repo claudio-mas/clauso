@@ -170,7 +170,7 @@ X-Trace-ID: bbf92f3577b34da6a3ce929d0e0e4736
 
 ## Suporte e logs
 
-Informe o `request_id` (ou o `X-Request-ID`) ao suporte. Cada requisição deixa uma linha de log com esse ID, o `trace_id`, o template da rota (`unmatched` quando a rota não existe), o status e a duração e, se a chave foi aceita, os IDs públicos do Tenant e da chave. Cada campo do log tem formato fixo (IDs, template da rota, método HTTP conhecido ou `OTHER`, status, duração), e as mensagens são nomes de evento, nunca texto livre: o log nunca registra a chave, o corpo, a query string, o path recebido nem dados pessoais ([ADR-0016](../adr/0016-observability.md)).
+Informe o `request_id` (ou o `X-Request-ID`) ao suporte. Cada requisição deixa uma linha de log com esse ID, o `trace_id`, o template da rota (`unmatched` quando a rota não existe), o status e a duração e, se a chave foi aceita, os IDs públicos do Tenant e da chave. Cada campo do log tem formato fixo (IDs, template de rota declarado ou `unmatched`, método HTTP conhecido ou `OTHER`, status, duração), e as mensagens são nomes de um catálogo fechado de eventos, nunca texto livre: o log nunca registra a chave, o corpo, a query string, o path recebido nem dados pessoais ([ADR-0016](../adr/0016-observability.md)).
 
 ## Contrato OpenAPI
 
