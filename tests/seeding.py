@@ -19,6 +19,9 @@ from factories import api_key_values, tenant_values
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from cce.integrations.api_keys.service import IssuedKey, issue_key_material
+from cce.shared.config import Settings
+
 CONTEXT_STATEMENT = "SELECT set_config('app.tenant_id', :tenant_id, true)"
 
 # Mesma expressão das policies de produção (migration 0002); um teste compara o texto das duas.
@@ -73,6 +76,26 @@ async def seed_key(engine: AsyncEngine, tenant: SeededTenant, **overrides: Any) 
         await apply_context(connection, tenant.id)
         await connection.execute(statement, dict(parameters))
     return SeededTenant(tenant.id, tenant.slug, tenant.name, key_id=values["id"])
+
+
+async def emit_key(
+    engine: AsyncEngine, settings: Settings, tenant: SeededTenant, **overrides: Any
+) -> tuple[SeededTenant, IssuedKey]:
+    """Emite uma chave com o código de produção e grava o digest dela para o Tenant.
+
+    A chave bruta só existe no `IssuedKey` devolvido. Quem chama manipula material de chave e leva
+    o marcador `sensitive`.
+    """
+    issued = issue_key_material(settings.env, settings.api_key_peppers, 1)
+    keyed = await seed_key(
+        engine,
+        tenant,
+        id=issued.key_id,
+        secret_digest=issued.secret_digest,
+        pepper_version=issued.pepper_version,
+        **overrides,
+    )
+    return keyed, issued
 
 
 async def remove_tenant(engine: AsyncEngine, tenant_id: UUID) -> None:
@@ -152,3 +175,70 @@ async def remove_tenants_with_slug_prefix(admin_engine: AsyncEngine, prefix: str
         await connection.execute(
             text("DELETE FROM cce.tenants WHERE slug LIKE :pattern"), {"pattern": pattern}
         )
+
+
+# Falhas REAIS na alteração de um Tenant, para provar que a API nunca responde 200 antes do fim da
+# transação. Um trigger por caso, só no banco de teste, enquanto a fixture o pede; nunca entra em
+# migration nem em metadata. `flush` falha no próprio UPDATE; os demais são adiados até o COMMIT.
+_TENANT_FAILURE_RAISES = {
+    "flush": "RAISE EXCEPTION 'tenant update failure probe'",
+    "commit": "RAISE EXCEPTION 'tenant update failure probe'",
+    "known-conflict": (
+        "RAISE EXCEPTION 'tenant update failure probe' "
+        "USING ERRCODE = 'unique_violation', CONSTRAINT = 'uq_tenants_slug'"
+    ),
+    "unknown-conflict": (
+        "RAISE EXCEPTION 'tenant update failure probe' "
+        "USING ERRCODE = 'check_violation', CONSTRAINT = 'ck_tenants_not_a_known_rule'"
+    ),
+}
+TENANT_FAILURES = tuple(_TENANT_FAILURE_RAISES)
+TENANT_FAILURE_TEARDOWN = (
+    "DROP TRIGGER IF EXISTS tenant_update_failure_probe ON cce.tenants",
+    "DROP FUNCTION IF EXISTS cce_private.tenant_update_failure_probe()",
+)
+
+
+def tenant_failure_statements(kind: str, tenant_id: UUID) -> tuple[str, ...]:
+    """Trigger que faz falhar toda alteração do Tenant `tenant_id` (só dele)."""
+    timing = (
+        "CREATE TRIGGER tenant_update_failure_probe BEFORE UPDATE ON cce.tenants FOR EACH ROW"
+        if kind == "flush"
+        else "CREATE CONSTRAINT TRIGGER tenant_update_failure_probe AFTER UPDATE ON cce.tenants "
+        "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW"
+    )
+    return (
+        "CREATE OR REPLACE FUNCTION cce_private.tenant_update_failure_probe() RETURNS trigger "
+        f"LANGUAGE plpgsql AS $$ BEGIN {_TENANT_FAILURE_RAISES[kind]}; END $$",
+        f"{timing} WHEN (NEW.id = '{tenant_id}'::uuid) "
+        "EXECUTE FUNCTION cce_private.tenant_update_failure_probe()",
+    )
+
+
+async def create_tenant_failure(engine: AsyncEngine, kind: str, tenant_id: UUID) -> None:
+    async with engine.begin() as connection:
+        for statement in TENANT_FAILURE_TEARDOWN + tenant_failure_statements(kind, tenant_id):
+            await connection.execute(text(statement))
+
+
+async def drop_tenant_failure(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        for statement in TENANT_FAILURE_TEARDOWN:
+            await connection.execute(text(statement))
+
+
+async def read_tenant(engine: AsyncEngine, tenant_id: UUID) -> dict[str, Any]:
+    """A linha do Tenant lida por uma conexão independente da API (dono do schema, sob contexto)."""
+    async with engine.connect() as connection:
+        await apply_context(connection, tenant_id)
+        row = (
+            await connection.execute(
+                text(
+                    "SELECT name, default_currency, timezone, locale, updated_at "
+                    "FROM cce.tenants WHERE id = :id"
+                ),
+                {"id": tenant_id},
+            )
+        ).one()
+        await connection.rollback()
+    return dict(row._mapping)

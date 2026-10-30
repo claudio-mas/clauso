@@ -4,7 +4,7 @@ Como um Host se identifica na API do CCE e o que acontece com a chave. A decisã
 
 ## Estado atual
 
-Estão implementados o material da chave, a função de lookup, a autenticação (`authenticate_api_key`, que devolve um `Principal`) e a CLI que emite e revoga chaves. As rotas HTTP, o cabeçalho `Authorization` e os códigos de resposta chegam com o ticket 07 do M0; esta página descreve o contrato que o ticket 07 implementa.
+Estão implementados o material da chave, a função de lookup, a autenticação (`authenticate_api_key`, que devolve um `Principal`), a CLI que emite e revoga chaves e a API HTTP: `GET /api/v1/auth/context`, `GET /api/v1/tenant` e `PATCH /api/v1/tenant`. O formato dos erros está em [`errors.md`](errors.md).
 
 ## A chave
 
@@ -32,8 +32,22 @@ Authorization: Bearer cce_dev_0123456789abcdef0123456789abcdef_<segredo>
 ```
 
 - Só o cabeçalho `Authorization: Bearer` autentica. Query string e cookie não.
-- O cliente nunca informa o Tenant: ele vem da chave. Nenhum cabeçalho seleciona outro Tenant.
+- Exatamente um cabeçalho `Authorization`, no formato `Bearer <chave>` (o esquema não diferencia maiúsculas). Dois cabeçalhos, espaço sobrando ou outro esquema dão `401`.
+- O cliente nunca informa o Tenant: ele vem da chave. Nenhum cabeçalho seleciona outro Tenant; `X-Tenant-ID` é ignorado.
 - Fora de `local` e `test`, só por HTTPS.
+
+## Contexto da chave
+
+```http
+GET /api/v1/auth/context HTTP/1.1
+Authorization: Bearer cce_dev_<id>_<segredo>
+```
+
+```json
+{"tenant_id": "ten_<32 hex>", "key_id": "key_<32 hex>", "scopes": ["tenant:read", "tenant:write"]}
+```
+
+Basta uma chave válida, com qualquer scope. A resposta nunca traz o digest nem o segredo.
 
 ## Scopes
 

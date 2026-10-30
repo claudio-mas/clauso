@@ -3,8 +3,11 @@
 Rodam como `cce_migrator`, nunca na API, e SEMPRE sob o contexto de um Tenant (a RLS é forçada
 também para o dono, ADR-0013): quem chama abre a transação com `tenant_session` e passa a sessão.
 Aqui nada confirma: o commit é do gerenciador de sessão, e por isso `provision_tenant` só devolve a
-chave bruta depois que o Tenant e a chave foram confirmados juntos. Um commit que falha levanta e
-não deixa Tenant, chave nem material para exibir.
+chave bruta depois que o Tenant e a chave foram confirmados juntos. Um commit que o servidor recusa
+(falha confirmada, seguida de rollback) levanta e não deixa Tenant, chave nem material para exibir.
+Uma exceção no commit nem sempre é isso: se a conexão cair depois de o servidor confirmar, o Tenant
+e a chave existem sem que a chave tenha sido vista. Esse resultado é incerto; o runbook
+`docs/runbooks/tenant-bootstrap.md` ("Se algo der errado") diz como conferir.
 
 As mensagens dos erros deste módulo são fixas e nunca repetem valores recebidos.
 """
@@ -147,8 +150,10 @@ async def provision_tenant(
     """Cria o Tenant e a chave inicial (todos os scopes) na MESMA transação.
 
     O UUID nasce aqui, antes do INSERT, e vira o contexto da transação. O resultado, que carrega a
-    chave bruta, só é montado depois que `tenant_session` confirmou: se o commit falhar, a exceção
-    sobe e nada foi gravado nem pode ser mostrado.
+    chave bruta, só é montado depois que `tenant_session` confirmou; se o commit levantar, a chave
+    nunca é devolvida. Só uma falha confirmada pelo servidor, com rollback, garante que nada foi
+    gravado; uma conexão perdida no commit deixa o resultado incerto (ver o runbook
+    `docs/runbooks/tenant-bootstrap.md`).
     """
     tenant_id = uuid4()
     async with tenant_session(factory, tenant_id) as session:
