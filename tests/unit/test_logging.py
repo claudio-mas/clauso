@@ -13,6 +13,7 @@ Higiene de falhas: marcador `sensitive`; verificações com valor sensível ou c
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -26,7 +27,7 @@ import uvicorn.config
 from api_support import BASE_URL
 from fastapi import Depends, FastAPI
 from integration.support import assert_no_leaks, require
-from key_support import secret_of
+from key_support import error_of, secret_of
 from log_support import PASSWORD, PEPPER, LogOutput, synthetic_settings
 from pydantic import SecretStr
 from sqlalchemy.engine import make_url
@@ -44,11 +45,13 @@ from cce.shared.config import Settings
 from cce.shared.ids import encode_key_id, encode_tenant_id
 from cce.shared.logging import (
     ALLOWED_FIELDS,
+    EVENTS,
     OTHER_METHOD,
     REDACTED,
     UNRECOGNIZED_EVENT,
     configure_logging,
     current_request_id,
+    declare_routes,
     normalize_method,
     redact,
     request_context,
@@ -640,14 +643,24 @@ def test_a_free_text_message_becomes_a_fixed_marker(log_output: LogOutput, messa
 
 
 @pytest.mark.parametrize(
-    "event", ["tenant.created", "api.unexpected_error", "http.request", "api_key.issued"]
+    "event",
+    [
+        "http.request",
+        "api.unexpected_error",
+        "api_key.pepper_version_missing",
+        "health.migration_heads_unreadable",
+    ],
 )
-def test_event_names_are_kept(log_output: LogOutput, event: str) -> None:
-    log_output.install(synthetic_settings())
+def test_the_events_the_code_emits_are_in_the_production_catalog(
+    log_output: LogOutput, event: str
+) -> None:
+    # Sem os eventos dos testes: só o catálogo de produção.
+    configure_logging(synthetic_settings(), stream=log_output.stream)
 
     logging.getLogger("cce.test").info(event)
 
-    require(len(log_output.events(event)) == 1, "an event name was not kept")
+    require(len(log_output.events(event)) == 1, "a production event is not in the catalog")
+    require(event in EVENTS, "the event is not in the exported catalog")
 
 
 def test_allowlisted_fields_keep_only_values_in_their_format(log_output: LogOutput) -> None:
@@ -678,8 +691,9 @@ def test_allowlisted_fields_keep_only_values_in_their_format(log_output: LogOutp
 
 def test_well_formed_values_of_allowlisted_fields_are_kept(log_output: LogOutput) -> None:
     log_output.install(synthetic_settings())
-    values = {
-        "route": "/api/v1/things/{thing_id}",
+    route = "/api/v1/things/{thing_id}"
+    values: dict[str, Any] = {
+        "route": route,
         "method": "PATCH",
         "error_type": "RuntimeError",
         "request_id": "req_" + "0" * 32,
@@ -692,6 +706,7 @@ def test_well_formed_values_of_allowlisted_fields_are_kept(log_output: LogOutput
         "frames": ["/app/cce/api/errors.py:12:handler"],
     }
 
+    declare_routes([route])
     logging.getLogger("cce.test").error("fields.kept", extra=values)
 
     line = log_line(log_output, "fields.kept")
@@ -770,3 +785,122 @@ def test_only_the_exact_known_method_names_are_kept() -> None:
     require(normalize_method(None) == OTHER_METHOD, "a missing method was not reduced")
     require(normalize_method(b"GET") == OTHER_METHOD, "a bytes method was kept")
     require(normalize_method("CONNECT") == "CONNECT", "a known method was lost")
+
+
+# --- catálogo fechado de eventos, rotas declaradas e segunda barreira (rodada 3) --------------
+
+CPF_EVENT = "customer.123.456.789.09"
+NAME_EVENT = "customer.maria.silva"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [DIGEST_HEX, CPF_EVENT, NAME_EVENT, "tenant.created"],
+    ids=["hex-digest-64", "cpf-event", "name-event", "uncataloged-event"],
+)
+def test_a_name_outside_the_event_catalog_becomes_the_marker(
+    log_output: LogOutput, message: str
+) -> None:
+    log_output.install(synthetic_settings())
+
+    logging.getLogger("cce.test").error(message)
+
+    lines = log_output.lines()
+    require(len(lines) == 1, "the line is missing")
+    require(lines[0].get("event") == UNRECOGNIZED_EVENT, "a name outside the catalog was kept")
+    assert_no_leaks(
+        log_output.text,
+        {"digest": DIGEST_HEX, "CPF": "123.456.789", "name": "maria", "event": "tenant.created"},
+        "uncataloged event log",
+    )
+
+
+def test_the_hex_digest_has_exactly_64_characters() -> None:
+    require(len(DIGEST_HEX) == 64, "the synthetic digest is not 64 hex characters")
+
+
+@pytest.mark.parametrize(
+    "name",
+    [DIGEST_HEX, "customer." + EMAIL, "Not An Event", "a" * 65],
+    ids=["hex-digest", "e-mail", "free-text", "too-long"],
+)
+def test_configure_logging_refuses_an_event_name_that_carries_data(name: str) -> None:
+    error = error_of(
+        lambda: configure_logging(synthetic_settings(), stream=io.StringIO(), events={name}),
+        ValueError,
+        "configure_logging with a bad event name",
+    )
+    assert_no_leaks(str(error), {"name": name}, "the refusal message")
+
+
+@pytest.mark.parametrize(
+    "route",
+    ["/customers/123.456.789-09", "/customers/maria.silva", "/api/v1/tenant/extra"],
+    ids=["cpf-path", "name-path", "undeclared-path"],
+)
+def test_a_route_that_is_not_a_declared_template_is_not_logged(
+    log_output: LogOutput, route: str
+) -> None:
+    log_output.install(synthetic_settings())
+
+    logging.getLogger("cce.test").error("fields.checked", extra={"route": route})
+
+    line = log_line(log_output, "fields.checked")
+    require(line.get("route") == REDACTED, "an undeclared route was kept")
+    assert_no_leaks(
+        log_output.text, {"CPF": "123.456.789", "name": "maria", "extra": "/extra"}, "route log"
+    )
+
+
+def test_a_declared_template_and_unmatched_are_kept(log_output: LogOutput) -> None:
+    log_output.install(synthetic_settings())
+    declare_routes(["/api/v1/widgets/{widget_id}"])
+
+    logger = logging.getLogger("cce.test")
+    logger.error("fields.kept", extra={"route": "/api/v1/widgets/{widget_id}"})
+    logger.error("fields.uuid", extra={"route": "unmatched"})
+
+    require(
+        log_line(log_output, "fields.kept").get("route") == "/api/v1/widgets/{widget_id}",
+        "a declared template was dropped",
+    )
+    require(log_line(log_output, "fields.uuid").get("route") == "unmatched", "unmatched lost")
+
+
+def test_declare_routes_ignores_a_template_that_carries_data(log_output: LogOutput) -> None:
+    log_output.install(synthetic_settings())
+    declare_routes(["/customers/" + DIGEST_HEX, "/customers/123.456.789-09"])
+
+    logger = logging.getLogger("cce.test")
+    logger.error("fields.kept", extra={"route": "/customers/" + DIGEST_HEX})
+    logger.error("fields.uuid", extra={"route": "/customers/123.456.789-09"})
+
+    assert_no_leaks(log_output.text, {"digest": DIGEST_HEX, "CPF": "123.456.789"}, "route log")
+
+
+def test_the_second_barrier_runs_on_formatted_text_fields(log_output: LogOutput) -> None:
+    log_output.install(synthetic_settings())
+    token = "Ab1" * 12  # 36 caracteres que misturam maiúscula, minúscula e dígito
+
+    logging.getLogger("cce." + DIGEST_HEX[:32]).error("fields.checked", extra={"error_type": token})
+
+    line = log_line(log_output, "fields.checked")
+    require(line.get("error_type") == REDACTED, "a token-like error_type was kept")
+    require(line.get("logger") == REDACTED, "a logger name with a digest was kept")
+    assert_no_leaks(log_output.text, {"token": token, "hex": DIGEST_HEX[:32]}, "barrier log")
+
+
+def test_public_ids_are_exempt_from_the_text_barrier(log_output: LogOutput) -> None:
+    log_output.install(synthetic_settings())
+    ids = {
+        "request_id": "req_" + "ab" * 16,
+        "trace_id": "ab" * 16,  # 32 hex: a barreira de texto o redigiria
+        "tenant_id": "ten_" + "cd" * 16,
+        "key_id": "key_" + "ef" * 16,
+    }
+
+    logging.getLogger("cce.test").error("fields.kept", extra=ids)
+
+    line = log_line(log_output, "fields.kept")
+    for name, value in ids.items():
+        require(line.get(name) == value, f"the public {name} was redacted")

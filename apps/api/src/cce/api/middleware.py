@@ -34,8 +34,10 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from cce.api.errors import internal_error_body, log_unexpected
 from cce.shared.logging import (
+    HTTP_REQUEST_EVENT,
     UNMATCHED_ROUTE,
     RequestContext,
+    declare_routes,
     normalize_method,
     request_context,
 )
@@ -73,6 +75,7 @@ def route_template(scope: Scope) -> str:
     for template, pattern in _templates(scope.get("app")):
         if template.endswith(relative) and pattern.fullmatch(path):
             return template
+    declare_routes([relative])  # rota declarada fora do OpenAPI (como /docs)
     return relative
 
 
@@ -89,6 +92,7 @@ def _templates(app: Any) -> tuple[tuple[str, Pattern[str]], ...]:
         # O log da requisição nunca derruba a resposta; sem templates, sai o path relativo da rota.
         paths = {}
     compiled = tuple((template, compile_path(template)[0]) for template in paths)
+    declare_routes(template for template, _ in compiled)
     if state is not None:
         state.route_templates = compiled
     return compiled
@@ -129,7 +133,7 @@ class RequestContextMiddleware:
         finally:
             try:
                 _logger.info(
-                    "http.request",
+                    HTTP_REQUEST_EVENT,
                     extra={
                         "method": normalize_method(scope.get("method")),
                         "route": route_template(scope),

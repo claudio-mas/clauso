@@ -34,7 +34,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from cce.identity.tenants.model import CONFLICT_FIELDS
 from cce.identity.tenants.service import TenantNotFound
 from cce.integrations.api_keys.authentication import AuthenticationFailed, DependencyUnavailable
-from cce.shared.logging import current_request_id
+from cce.shared.logging import UNEXPECTED_ERROR_EVENT, current_request_id
 
 LOGGER_NAME = "cce.api.errors"
 _logger = logging.getLogger(LOGGER_NAME)
@@ -205,7 +205,7 @@ def log_unexpected(error: BaseException) -> None:
         for frame in traceback.extract_tb(error.__traceback__)
     ]
     _logger.error(
-        "api.unexpected_error",
+        UNEXPECTED_ERROR_EVENT,
         extra={"error_type": type(error).__name__, "frames": frames},
     )
 

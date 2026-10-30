@@ -13,7 +13,7 @@ from __future__ import annotations
 import io
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 import pytest
@@ -25,6 +25,24 @@ from cce.shared.logging import configure_logging
 
 PASSWORD = "app-password-LOGSENTINEL"
 PEPPER = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="  # 32 bytes, só para validar o formato
+# Nomes de evento que só os testes emitem, acrescentados ao catálogo fechado de produção.
+TEST_EVENTS = frozenset(
+    {
+        "thing.happened",
+        "too.quiet",
+        "loud.enough",
+        "with.extras",
+        "careless.log",
+        "operation.failed",
+        "inside.request",
+        "after.requests",
+        "once",
+        "console.line",
+        "fields.checked",
+        "fields.kept",
+        "fields.uuid",
+    }
+)
 _LOGGERS = ("", "uvicorn", "uvicorn.error", "uvicorn.access", "cce")
 
 
@@ -46,8 +64,9 @@ class LogOutput:
     def __init__(self) -> None:
         self.stream = io.StringIO()
 
-    def install(self, settings: Settings) -> None:
-        configure_logging(settings, stream=self.stream)
+    def install(self, settings: Settings, events: Iterable[str] = ()) -> None:
+        """Instala o pipeline com o catálogo de produção mais os eventos dos testes."""
+        configure_logging(settings, stream=self.stream, events={*TEST_EVENTS, *events})
 
     @property
     def text(self) -> str:
