@@ -17,6 +17,7 @@ from api_support import bearer, require_error, require_status, running_app, send
 from fastapi import FastAPI
 from key_support import acall_or_fail
 from seeding import SeededTenant, emit_key, read_tenant
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.types import Message
 
@@ -175,6 +176,112 @@ async def test_concurrent_requests_of_two_tenants_each_see_only_their_own(
     }
     require(names["A"].startswith("Empresa A "), "A holds a name written for B")
     require(names["B"].startswith("Empresa B "), "B holds a name written for A")
+
+
+async def test_concurrent_failures_of_a_never_reach_b_on_the_single_connection(
+    api: Api,
+    migrator_engine: AsyncEngine,
+    api_settings: Settings,
+    tenant_a: SeededTenant,
+    tenant_b: SeededTenant,
+    tenant_failure: Inject,
+) -> None:
+    """A falha no flush em toda alteração; B lê e altera ao mesmo tempo, pela mesma conexão."""
+    app, client = api
+    _, key_a = await emit_key(migrator_engine, api_settings, tenant_a)
+    _, key_b = await emit_key(migrator_engine, api_settings, tenant_b)
+    before = await read_tenant(migrator_engine, tenant_a.id)
+    await tenant_failure("flush", tenant_a.id)
+
+    async def call(who: str, method: str, index: int) -> tuple[str, str, int, str | None]:
+        key = key_a if who == "A" else key_b
+        options = {"json": {"name": f"Empresa {who} {index}"}} if method == "PATCH" else {}
+        response = await send(client, method, TENANT, headers=bearer(key.raw_key), **options)
+        tenant_id = response.json().get("id") if response.status_code == 200 else None
+        return who, method, response.status_code, tenant_id
+
+    calls = []
+    for index in range(10):
+        calls += [call("A", "PATCH", index), call("B", "GET", index), call("B", "PATCH", index)]
+    results = await asyncio.gather(*calls)
+
+    for who, method, status, tenant_id in results:
+        if who == "A":
+            require(status == 500, f"a failing PATCH of A returned {status}, expected 500")
+        else:
+            require(status == 200, f"a {method} of B returned {status} next to A's failures")
+            require(tenant_id == encode_tenant_id(tenant_b.id), f"a {method} of B saw A")
+    require(await read_tenant(migrator_engine, tenant_a.id) == before, "a failed PATCH persisted")
+    name_b = (await read_tenant(migrator_engine, tenant_b.id))["name"]
+    require(name_b.startswith("Empresa B "), "B holds a name written for A")
+    require(app.state.engine.pool.checkedout() == 0, "a failed request kept the connection")
+
+
+SLEEPING_RUNTIME = """
+    select count(*) from pg_stat_activity
+    where usename = 'cce_app' and datname = current_database() and wait_event = 'PgSleep'
+"""
+
+
+async def sleeping_runtime_backends(admin_engine: AsyncEngine) -> int:
+    async with admin_engine.connect() as connection:
+        count = (await connection.execute(text(SLEEPING_RUNTIME))).scalar_one()
+        await connection.rollback()
+    return int(count)
+
+
+async def wait_for_sleeping_runtime(admin_engine: AsyncEngine, expected: int) -> bool:
+    """Espera (até 3 s) que o número de backends do runtime parados no trigger seja `expected`."""
+    for _ in range(60):
+        if await sleeping_runtime_backends(admin_engine) == expected:
+            return True
+        await asyncio.sleep(0.05)
+    return False
+
+
+async def test_a_cancelled_request_persists_nothing_and_the_connection_then_serves_b(
+    api: Api,
+    migrator_engine: AsyncEngine,
+    admin_engine: AsyncEngine,
+    api_settings: Settings,
+    tenant_a: SeededTenant,
+    tenant_b: SeededTenant,
+    tenant_failure: Inject,
+) -> None:
+    """O cliente desiste no meio do UPDATE de A: a transação não chega ao COMMIT."""
+    app, client = api
+    _, key_a = await emit_key(migrator_engine, api_settings, tenant_a)
+    _, key_b = await emit_key(migrator_engine, api_settings, tenant_b)
+    before = await read_tenant(migrator_engine, tenant_a.id)
+    await tenant_failure("slow", tenant_a.id)
+
+    request = asyncio.create_task(
+        send(client, "PATCH", TENANT, headers=bearer(key_a.raw_key), json={"name": "Nunca"})
+    )
+    started = await wait_for_sleeping_runtime(admin_engine, 1)
+    request.cancel()
+    cancelled = False
+    try:
+        await request
+    except asyncio.CancelledError:
+        cancelled = True
+
+    require(started, "the PATCH of A never reached the slow trigger")
+    require(cancelled, "the request was not cancelled")
+    require(app.state.engine.pool.checkedout() == 0, "the cancelled request kept the connection")
+    after = await send(client, "GET", TENANT, headers=bearer(key_b.raw_key))
+    require(
+        require_status(after, 200, "B after the cancellation")["id"]
+        == encode_tenant_id(tenant_b.id),
+        "the connection after the cancellation did not serve Tenant B",
+    )
+    require(
+        await wait_for_sleeping_runtime(admin_engine, 0),
+        "the cancelled UPDATE is still running in the database",
+    )
+    require(
+        await read_tenant(migrator_engine, tenant_a.id) == before, "the cancelled PATCH persisted"
+    )
 
 
 async def test_every_connection_returns_to_the_pool_after_requests_and_errors(

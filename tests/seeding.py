@@ -180,7 +180,11 @@ async def remove_tenants_with_slug_prefix(admin_engine: AsyncEngine, prefix: str
 # Falhas REAIS na alteração de um Tenant, para provar que a API nunca responde 200 antes do fim da
 # transação. Um trigger por caso, só no banco de teste, enquanto a fixture o pede; nunca entra em
 # migration nem em metadata. `flush` falha no próprio UPDATE; os demais são adiados até o COMMIT.
+# `slow` não falha: segura o UPDATE no servidor por 4 s (abaixo do statement_timeout de 5 s), para
+# que o teste cancele a requisição com a transação aberta.
+_IN_THE_UPDATE = ("flush", "slow")
 _TENANT_FAILURE_RAISES = {
+    "slow": "PERFORM pg_sleep(4); RETURN NEW",
     "flush": "RAISE EXCEPTION 'tenant update failure probe'",
     "commit": "RAISE EXCEPTION 'tenant update failure probe'",
     "known-conflict": (
@@ -200,10 +204,10 @@ TENANT_FAILURE_TEARDOWN = (
 
 
 def tenant_failure_statements(kind: str, tenant_id: UUID) -> tuple[str, ...]:
-    """Trigger que faz falhar toda alteração do Tenant `tenant_id` (só dele)."""
+    """Trigger que faz falhar (ou, em `slow`, segura) toda alteração do Tenant `tenant_id`."""
     timing = (
         "CREATE TRIGGER tenant_update_failure_probe BEFORE UPDATE ON cce.tenants FOR EACH ROW"
-        if kind == "flush"
+        if kind in _IN_THE_UPDATE
         else "CREATE CONSTRAINT TRIGGER tenant_update_failure_probe AFTER UPDATE ON cce.tenants "
         "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW"
     )
