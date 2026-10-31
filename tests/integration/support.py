@@ -14,7 +14,10 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 ROOT = Path(__file__).resolve().parents[2]
-COMPOSE_PROJECT = "cce-test"
+# Projetos Compose descartáveis: `cce-test` (runbook local) e `cce-ci` (`scripts/ci.sh`).
+COMPOSE_PROJECT_VARIABLE = "CCE_TEST_COMPOSE_PROJECT"
+DEFAULT_COMPOSE_PROJECT = "cce-test"
+DISPOSABLE_COMPOSE_PROJECTS = (DEFAULT_COMPOSE_PROJECT, "cce-ci")
 BOOTSTRAP_SCRIPT = "/docker-entrypoint-initdb.d/01-bootstrap.sh"
 
 
@@ -27,15 +30,26 @@ def compose_env_file() -> Path:
     return ROOT / os.environ.get("CCE_ENV_FILE", ".env.test")
 
 
+def compose_project() -> str:
+    """Projeto Compose dos testes; recusa qualquer um que não seja descartável."""
+    project = os.environ.get(COMPOSE_PROJECT_VARIABLE, DEFAULT_COMPOSE_PROJECT)
+    if project not in DISPOSABLE_COMPOSE_PROJECTS:
+        pytest.fail(
+            f"{COMPOSE_PROJECT_VARIABLE} must be one of {', '.join(DISPOSABLE_COMPOSE_PROJECTS)}",
+            pytrace=False,
+        )
+    return project
+
+
 def compose_command(*args: str) -> list[str]:
-    """Comando `docker compose` do projeto de teste (`cce-test`), separado do ambiente local."""
+    """Comando `docker compose` do projeto de teste, separado do ambiente local."""
     return [
         "docker",
         "compose",
         "--env-file",
         str(compose_env_file()),
         "-p",
-        COMPOSE_PROJECT,
+        compose_project(),
         "--project-directory",
         str(ROOT),
         "-f",

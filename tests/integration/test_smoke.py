@@ -1,4 +1,4 @@
-"""A imagem constrói, a API sobe pelo Compose (projeto `cce-test`) e o smoke com dois Tenants passa.
+"""A imagem constrói, a API sobe pelo Compose (projeto de teste) e o smoke com dois Tenants passa.
 
 As chaves são emitidas pelo código de produção e gravadas no banco de teste, que é o mesmo do
 Compose (`compose_targets_validated_database`). O smoke recebe as chaves pelo ambiente do processo,
