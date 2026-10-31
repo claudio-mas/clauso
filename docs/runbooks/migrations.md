@@ -40,7 +40,9 @@ O `alembic check` não enxerga o que o metadata não representa. É isso que `sc
 | Grants | Grant ausente, extra ou com GRANT OPTION, por tabela e por coluna; `CREATE` do runtime em algum schema |
 | Funções | A função de lookup com outro dono, sem SECURITY DEFINER, sem `search_path` e `row_security` fixos ou com outro corpo; qualquer outra função SECURITY DEFINER ou executável pelo runtime ou por PUBLIC |
 | Constraints | Constraint ausente, extra, com outra definição (CHECK inclusive) ou não validada (`NOT VALID`) |
-| Triggers, rules e relações | Trigger ou rule que não seja interno; trigger de FK desligado; view, sequência ou qualquer relação em `cce_private` |
+| Triggers, rules e relações | Trigger ou rule que não seja interno; view, sequência ou qualquer relação em `cce_private`; replica identity diferente da padrão |
+| Trigger de FK | Fora do modo em que as migrations o criam (O): desligado (D), só em réplica (R) ou sempre (A) |
+| Database e cluster | Publication que inclua `cce`; event trigger; GRANT SET ou ALTER SYSTEM em parâmetro para um role do produto ou PUBLIC (o runtime poderia pôr `session_replication_role` em `replica` e desligar as FKs) |
 | Default privileges | Funções novas de `cce_migrator` ou `cce_auth` executáveis por PUBLIC; qualquer default que conceda algo a objetos futuros |
 | Defaults de sessão | `search_path` e timeouts dos roles diferentes do bootstrap; qualquer default por database |
 
