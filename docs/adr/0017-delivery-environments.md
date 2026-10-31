@@ -1,7 +1,7 @@
 # ADR-0017: Ambientes de entrega, migrations em job separado e CI obrigatória antes do merge
 
 **Data:** 31/10/2026
-**Status:** Proposto
+**Status:** Aceito (31/10/2026)
 
 ## Contexto
 
@@ -40,7 +40,7 @@ O código é o mesmo nos quatro. O que muda é a configuração, validada no sta
 
 ### CI obrigatória antes do merge
 
-- `.github/workflows/ci.yml` tem um único job, `foundation`, disparado em `pull_request` e em `push` na `main` (e manualmente). Ele só instala o uv fixado (ADR-0011) e roda `bash scripts/ci.sh`.
+- `.github/workflows/ci.yml` tem um único job, `foundation`, disparado em `pull_request` e em `push` na `main` (e manualmente). Ele só instala o uv fixado (ADR-0011) e roda `bash scripts/ci.sh`. A instalação usa `pip install --user --break-system-packages uv==0.12.10`: a flag atende à PEP 668 do Python do runner Ubuntu 24.04, o `--user` continua sem tocar no sistema e a versão fixada do ADR-0011 não muda.
 - `scripts/ci.sh` é o pipeline, e roda igual localmente. Ele reproduz o ambiente do zero num projeto Compose descartável (`cce-ci`, banco `cce_test_ci`, segredos novos) e para no primeiro controle que falhar: lock, lint e formato, tipos, configuração e segredos do Compose, migrations até o head, testes de migration, suíte de unidade, integração e contrato com cobertura de ao menos 85%, `alembic check`, `scripts/check_schema.py`, auditoria de dependências (`pip-audit`), build da imagem, job de migration, API pelo Compose e smoke com dois Tenants por HTTP.
 - O workflow só lê o repositório (`permissions: contents: read`), não usa segredos do GitHub, não persiste a credencial do checkout e fixa cada action por SHA completo, com a versão no comentário.
 - Uma vulnerabilidade apontada pelo `pip-audit` nunca é ignorada automaticamente: atualiza-se o lock ou registra-se uma exceção específica, justificada e com validade, numa alteração revisada.
