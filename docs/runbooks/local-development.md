@@ -85,14 +85,18 @@ A API escuta só em `127.0.0.1:8000`. O Swagger fica em `/docs` quando `CCE_DOCS
 
 ### Smoke com dois Tenants
 
-Crie dois Tenants com `cce-admin tenant create` (ver `tenant-bootstrap.md`) e passe as chaves iniciais pelo ambiente, nunca como argumento:
+Crie dois Tenants com `cce-admin tenant create` e, para o Tenant A, mais duas chaves com `cce-admin api-key issue`: uma só com `--scope tenant:read` e uma "revogável" com os dois scopes (ver `tenant-bootstrap.md`). Passe as chaves pelo ambiente, nunca como argumento:
 
 ```bash
-read -rs CCE_SMOKE_KEY_A && read -rs CCE_SMOKE_KEY_B && export CCE_SMOKE_KEY_A CCE_SMOKE_KEY_B
-python3 scripts/smoke.py   # CCE_SMOKE_BASE_URL, padrão http://127.0.0.1:8000
+read -rs CCE_SMOKE_KEY_A && read -rs CCE_SMOKE_KEY_B && read -rs CCE_SMOKE_KEY_READ_ONLY \
+    && read -rs CCE_SMOKE_KEY_REVOCABLE
+export CCE_SMOKE_KEY_A CCE_SMOKE_KEY_B CCE_SMOKE_KEY_READ_ONLY CCE_SMOKE_KEY_REVOCABLE
+python3 scripts/smoke.py             # CCE_SMOKE_BASE_URL, padrão http://127.0.0.1:8000
+cce-admin api-key revoke --tenant ten_<A> --key key_<revogável>
+python3 scripts/smoke.py --revoked
 ```
 
-O smoke confere liveness, readiness, o `401` sem chave, que as chaves são de Tenants distintos, que `X-Tenant-ID` é ignorado, que o `PATCH` de A não altera B e que um campo proibido dá `422`. Ele renomeia o Tenant A. A saída é uma linha por etapa e nunca mostra chave nem corpo de resposta. O teste `tests/integration/test_smoke.py` faz o mesmo no projeto `cce-test`: constrói a imagem, sobe a API pelo Compose, emite as chaves e roda o smoke.
+A primeira fase confere liveness, readiness, o `401` sem chave, que as chaves são de Tenants distintos, que `X-Tenant-ID` é ignorado, que o `PATCH` de A não altera B, que um campo proibido dá `422`, que nenhuma resposta de um Tenant traz o ID do outro, que a chave só com `tenant:read` lê o Tenant mas leva `403 FORBIDDEN` (com `required_scopes: ["tenant:write"]`) no `PATCH` sem alterar nada, e que a chave revogável autentica. A fase `--revoked`, depois da revogação, confere que essa chave leva `401` e que a `CCE_SMOKE_KEY_A`, do mesmo Tenant, continua valendo. O smoke renomeia o Tenant A. A saída é uma linha por etapa e nunca mostra chave nem corpo de resposta. O teste `tests/integration/test_smoke.py` faz o mesmo no projeto de teste: constrói a imagem, sobe a API pelo Compose, emite as chaves, roda a primeira fase, revoga a chave pelo código da CLI e roda a segunda; `tests/unit/test_smoke_script.py` prova, contra uma API falsa, que cada defeito de scope, revogação ou isolamento reprova a etapa certa.
 
 ## Roles e credenciais
 
@@ -144,7 +148,7 @@ uv run --project apps/api --locked pytest tests/unit
 bash scripts/ci.sh
 ```
 
-É o que o job `foundation` roda em toda Pull Request (`.github/workflows/ci.yml`, ADR-0017). O script reproduz o ambiente do zero no projeto Compose descartável `cce-ci`, com o banco `cce_test_ci` e um dotenv de segredos novos num diretório temporário, e para no primeiro controle que falhar: lock, Ruff, mypy, configuração e segredos do Compose (`scripts/check_compose_secrets.py`, que nunca imprime valores), migrations até o head, `tests/migrations`, a suíte de unidade, integração e contrato com cobertura mínima de 85%, `alembic check`, `scripts/check_schema.py`, `pip-audit`, build da imagem, o job `migrate` separado, a API pelo Compose e o smoke com dois Tenants. Código 0 e `ci: all mandatory controls passed` no fim significam tudo verde.
+É o que o job `foundation` roda em toda Pull Request (`.github/workflows/ci.yml`, ADR-0017). O script reproduz o ambiente do zero no projeto Compose descartável `cce-ci`, com o banco `cce_test_ci` e um dotenv de segredos novos num diretório temporário, e para no primeiro controle que falhar: lock, Ruff, mypy, configuração e segredos do Compose (`scripts/check_compose_secrets.py`, que nunca imprime valores), migrations até o head, `tests/migrations`, a suíte de unidade, integração e contrato com cobertura mínima de 85%, `alembic check`, `scripts/check_schema.py`, `pip-audit`, build da imagem, o job `migrate` separado, a API pelo Compose e as duas fases do smoke (isolamento entre Tenants, scopes e revogação, com as chaves emitidas e revogadas pelo `cce-admin`). Código 0 e `ci: all mandatory controls passed` no fim significam tudo verde.
 
 - Exige uv 0.12.10 e as portas 5432, 6379 e 8000 livres: pare os projetos `cce` e `cce-test` antes (`docker compose --env-file .env.test -p cce-test stop`, que não apaga dados).
 - Os testes de Compose leem o projeto de `CCE_TEST_COMPOSE_PROJECT`, que o script define como `cce-ci`; sem ela, vale o `cce-test`. Qualquer outro nome é recusado.

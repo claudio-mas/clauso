@@ -127,18 +127,36 @@ compose build api
 compose run --rm --no-deps migrate
 compose up -d --wait --no-build --no-deps api
 
-step "two-Tenant smoke over HTTP"
-# Cria um Tenant e devolve só a chave inicial; o JSON da CLI nunca chega ao terminal.
-initial_key() {
-    uv_run cce-admin tenant create --name "$1" --slug "$2" \
-        | python3 -c 'import json, sys; print(json.load(sys.stdin)["api_key"]["key"])'
+step "two-Tenant smoke over HTTP: isolation, scopes and revocation"
+# Lê um campo do JSON da CLI, recebido por stdin. O JSON e as chaves ficam só em variáveis do
+# shell e chegam ao smoke pelo ambiente; nada disso vai para o argv nem para o terminal.
+json_field() {
+    python3 -c 'import json, sys
+value = json.load(sys.stdin)
+for part in sys.argv[1].split("."):
+    value = value[part]
+print(value)' "$1"
 }
 suffix="$(date +%s)"
-key_a="$(initial_key "CI Smoke A" "ci-smoke-a-$suffix")"
-key_b="$(initial_key "CI Smoke B" "ci-smoke-b-$suffix")"
+created_a="$(uv_run cce-admin tenant create --name "CI Smoke A" --slug "ci-smoke-a-$suffix")"
+created_b="$(uv_run cce-admin tenant create --name "CI Smoke B" --slug "ci-smoke-b-$suffix")"
+tenant_a="$(json_field tenant.id <<<"$created_a")"
+key_a="$(json_field api_key.key <<<"$created_a")"
+key_b="$(json_field api_key.key <<<"$created_b")"
+read_only="$(uv_run cce-admin api-key issue --tenant "$tenant_a" --label "CI read-only" \
+    --scope tenant:read)"
+revocable="$(uv_run cce-admin api-key issue --tenant "$tenant_a" --label "CI revocable" \
+    --scope tenant:read --scope tenant:write)"
 CCE_SMOKE_BASE_URL="$BASE_URL" CCE_SMOKE_KEY_A="$key_a" CCE_SMOKE_KEY_B="$key_b" \
+    CCE_SMOKE_KEY_READ_ONLY="$(json_field api_key.key <<<"$read_only")" \
+    CCE_SMOKE_KEY_REVOCABLE="$(json_field api_key.key <<<"$revocable")" \
     python3 scripts/smoke.py
-unset key_a key_b
+uv_run cce-admin api-key revoke --tenant "$tenant_a" \
+    --key "$(json_field api_key.id <<<"$revocable")" >/dev/null
+CCE_SMOKE_BASE_URL="$BASE_URL" CCE_SMOKE_KEY_A="$key_a" \
+    CCE_SMOKE_KEY_REVOCABLE="$(json_field api_key.key <<<"$revocable")" \
+    python3 scripts/smoke.py --revoked
+unset created_a created_b key_a key_b read_only revocable
 
 step "report"
 total="$(uv_run coverage report --data-file "$COVERAGE_FILE" --format=total)"

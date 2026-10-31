@@ -46,7 +46,10 @@ MANDATORY_STEPS = [
     ("image build", r"compose build api"),
     ("separate migration job", r"compose run --rm --no-deps migrate"),
     ("api through compose", r"compose up -d --wait --no-build --no-deps api"),
-    ("smoke", r"scripts/smoke\.py"),
+    ("read-only key", r"cce-admin api-key issue --tenant \"\$tenant_a\" .*--scope tenant:read\)\""),
+    ("smoke", r"python3 scripts/smoke\.py\n"),
+    ("revocation", r"cce-admin api-key revoke --tenant \"\$tenant_a\""),
+    ("smoke after the revocation", r"python3 scripts/smoke\.py --revoked"),
 ]
 
 
