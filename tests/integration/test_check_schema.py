@@ -663,6 +663,11 @@ SUPERUSER_CATALOG_DEFECTS = {
         ("ALTER DEFAULT PRIVILEGES FOR ROLE cce_auth GRANT EXECUTE ON FUNCTIONS TO PUBLIC",),
         "missing default privilege: functions of cce_auth are executable by PUBLIC",
     ),
+    # Global (sem IN SCHEMA), de um role fora do produto: vale também para o que ele criar em cce.
+    "global-default-of-another-role-for-the-runtime": (
+        ("ALTER DEFAULT PRIVILEGES FOR ROLE postgres GRANT SELECT ON TABLES TO cce_app",),
+        "unexpected default privilege: postgres grants SELECT on tables to cce_app",
+    ),
     "default-privilege-of-another-role-in-the-schema": (
         (
             "ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA cce "

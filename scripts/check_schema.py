@@ -295,6 +295,7 @@ _DEFAULT_PRIVILEGES = """
     left join pg_namespace n on n.oid = d.defaclnamespace
     cross join lateral aclexplode(d.defaclacl) a
     where pg_get_userbyid(d.defaclrole) = any(:roles) or n.nspname = any(:schemas)
+       or pg_get_userbyid(a.grantee) = any(:roles)
 """
 _DEFAULT_PRIVILEGE_OWNERS = """
     select pg_get_userbyid(defaclrole) from pg_default_acl
