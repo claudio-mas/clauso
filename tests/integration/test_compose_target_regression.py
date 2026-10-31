@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from child_pytest import pytest_command, pytest_environment
 
 from .support import ROOT, compose_env_file, read_dotenv
 
@@ -74,12 +75,12 @@ def test_compose_mutations_are_refused_when_dotenv_and_process_environment_diver
     }
 
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", target, "-q", "-p", "no:cacheprovider", "-rA", "-vv"],
+        pytest_command(target, "-q", "-rA", "-vv"),
         capture_output=True,
         text=True,
         check=False,
         cwd=ROOT,
-        env=environment,
+        env=pytest_environment(environment, tmp_path),
     )
     output = result.stdout + result.stderr
 
@@ -130,12 +131,12 @@ def test_compose_mutations_are_refused_when_the_migrate_endpoint_is_not_the_inte
     }
 
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", target, "-q", "-p", "no:cacheprovider", "-rA", "-vv"],
+        pytest_command(target, "-q", "-rA", "-vv"),
         capture_output=True,
         text=True,
         check=False,
         cwd=ROOT,
-        env=environment,
+        env=pytest_environment(environment, tmp_path),
     )
     output = result.stdout + result.stderr
 
