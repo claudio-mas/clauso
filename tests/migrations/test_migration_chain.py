@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from db_support import ROOT, run_alembic
+from db_support import ROOT, run_alembic, run_check_schema, sensitive_components
 from integration.support import assert_no_leaks, require
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
@@ -239,6 +239,82 @@ async def test_empty_to_0001_to_base_to_0001(
     run_alembic(migrator_settings, "upgrade", "0001")
     assert await user_tables(migrator_connection) == TABLES
     assert await applied_revisions(migrator_connection) == ["0001"]
+
+
+async def catalog_state(connection: AsyncConnection) -> dict[str, list[tuple[object, ...]]]:
+    """`rls_state` mais constraints (com a definição e a validação) e índices de `cce`."""
+    state = await rls_state(connection)
+    queries = {
+        "constraints": """
+            select c.relname, k.conname, pg_get_constraintdef(k.oid), k.convalidated
+            from pg_constraint k
+            join pg_class c on c.oid = k.conrelid
+            join pg_namespace n on n.oid = c.relnamespace
+            where n.nspname = 'cce'
+            order by 1, 2
+        """,
+        "indexes": """
+            select tablename, indexname, indexdef from pg_indexes
+            where schemaname = 'cce'
+            order by 1, 2
+        """,
+    }
+    for name, query in queries.items():
+        state[name] = [tuple(row) for row in (await connection.execute(text(query))).all()]
+    await connection.rollback()
+    return state
+
+
+def require_clean_schema(settings: MigrationSettings) -> None:
+    result = run_check_schema(settings)
+    dsn = settings.migrator_database_url.get_secret_value()
+    assert_no_leaks(result.stdout + result.stderr, sensitive_components(dsn), "check_schema output")
+    require(result.returncode == 0, f"check_schema exited {result.returncode} after the chain")
+
+
+async def test_0001_to_head_to_base_to_head_restores_constraints_policies_and_grants(
+    migrator_settings: MigrationSettings, migrator_connection: AsyncConnection
+) -> None:
+    run_alembic(migrator_settings, "downgrade", "base")
+    require(await user_tables(migrator_connection) == set(), "base still has tables")
+
+    run_alembic(migrator_settings, "upgrade", "0001")
+    assert await applied_revisions(migrator_connection) == ["0001"]
+    run_alembic(migrator_settings, "upgrade", "head")
+    first = await catalog_state(migrator_connection)
+    require_clean_schema(migrator_settings)
+
+    run_alembic(migrator_settings, "downgrade", "base")
+    assert await user_tables(migrator_connection) == set()
+    assert await applied_revisions(migrator_connection) == []
+    assert await base_functions(migrator_connection) == []
+
+    run_alembic(migrator_settings, "upgrade", "head")
+    rebuilt = await catalog_state(migrator_connection)
+
+    assert await applied_revisions(migrator_connection) == ["0003"]
+    assert rebuilt == first
+    # O estado não é vazio: as categorias que o metadata não representa estão todas lá.
+    assert {name for name, rows in first.items() if not rows} == set()
+    require_clean_schema(migrator_settings)
+    check = run_alembic(migrator_settings, "check")
+    assert check.returncode == 0
+
+
+async def base_functions(connection: AsyncConnection) -> list[str]:
+    """Funções que sobraram nos schemas do produto (em base, nenhuma)."""
+    rows = (
+        await connection.execute(
+            text("""
+                select p.proname from pg_proc p
+                join pg_namespace n on n.oid = p.pronamespace
+                where n.nspname in ('cce', 'cce_private')
+            """)
+        )
+    ).scalars()
+    found = list(rows)
+    await connection.rollback()
+    return found
 
 
 async def test_upgrade_head_is_idempotent_and_there_is_a_single_head(

@@ -13,12 +13,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import os
-import subprocess
-import sys
 from types import ModuleType
 
 import pytest
-from db_support import ROOT, alembic_environment, sensitive_components
+from db_support import ROOT, run_check_schema, sensitive_components
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -558,28 +556,286 @@ async def test_it_reports_a_function_owned_by_the_runtime_role(
     assert "function cce_private.probe(): owned by cce_app" in found
 
 
-# --- a linha de comando ---------------------------------------------------------------------
+# --- o resto do catálogo: constraints, triggers, rules, relações e default privileges ---------
+# O `alembic check` não compara CHECK constraints nem enxerga triggers, rules, views em outros
+# schemas ou default privileges; cada um destes defeitos passaria por ele.
+
+DIGEST_LENGTH = "ck_api_keys_secret_digest_length"
+SCOPES = "ck_api_keys_scopes_allowed"
+TENANT_FK = "fk_api_keys_tenant_id_tenants"
+TRIGGER_FUNCTION = (
+    "CREATE FUNCTION cce_private.probe() RETURNS trigger LANGUAGE plpgsql "
+    "AS $$ BEGIN RETURN NEW; END $$"
+)
+CATALOG_DEFECTS = {
+    "check-dropped": (
+        (f"ALTER TABLE cce.api_keys DROP CONSTRAINT {SCOPES}",),
+        f"cce.api_keys: constraint {SCOPES} is missing",
+    ),
+    "check-weakened-under-the-same-name": (
+        (
+            f"ALTER TABLE cce.api_keys DROP CONSTRAINT {SCOPES}",
+            f"ALTER TABLE cce.api_keys ADD CONSTRAINT {SCOPES} CHECK (true)",
+        ),
+        f"cce.api_keys: constraint {SCOPES} differs from the expected definition",
+    ),
+    "check-not-validated": (
+        (
+            f"ALTER TABLE cce.api_keys DROP CONSTRAINT {DIGEST_LENGTH}",
+            f"ALTER TABLE cce.api_keys ADD CONSTRAINT {DIGEST_LENGTH} "
+            "CHECK (octet_length(secret_digest) = 32) NOT VALID",
+        ),
+        f"cce.api_keys: constraint {DIGEST_LENGTH} is not validated",
+    ),
+    "foreign-key-dropped": (
+        (f"ALTER TABLE cce.api_keys DROP CONSTRAINT {TENANT_FK}",),
+        f"cce.api_keys: constraint {TENANT_FK} is missing",
+    ),
+    "foreign-key-cascades": (
+        (
+            f"ALTER TABLE cce.api_keys DROP CONSTRAINT {TENANT_FK}",
+            f"ALTER TABLE cce.api_keys ADD CONSTRAINT {TENANT_FK} FOREIGN KEY (tenant_id) "
+            "REFERENCES cce.tenants (id) ON DELETE CASCADE",
+        ),
+        f"cce.api_keys: constraint {TENANT_FK} differs from the expected definition",
+    ),
+    # Adiada até o COMMIT: dentro da transação, api_keys aceitaria um tenant_id inexistente.
+    "foreign-key-deferrable": (
+        (f"ALTER TABLE cce.api_keys ALTER CONSTRAINT {TENANT_FK} DEFERRABLE INITIALLY DEFERRED",),
+        f"cce.api_keys: constraint {TENANT_FK} differs from the expected definition",
+    ),
+    # Com REPLICA IDENTITY FULL, a decodificação lógica levaria a linha antiga inteira (o digest).
+    "replica-identity-full": (
+        ("ALTER TABLE cce.api_keys REPLICA IDENTITY FULL",),
+        "cce.api_keys: replica identity is not the default",
+    ),
+    "extra-constraint": (
+        ("ALTER TABLE cce.tenants ADD CONSTRAINT ck_tenants_probe CHECK (true)",),
+        "cce.tenants: unexpected constraint ck_tenants_probe",
+    ),
+    "trigger": (
+        (
+            TRIGGER_FUNCTION,
+            "CREATE TRIGGER probe BEFORE UPDATE ON cce.tenants "
+            "FOR EACH ROW EXECUTE FUNCTION cce_private.probe()",
+        ),
+        "cce.tenants: unexpected trigger probe",
+    ),
+    "rule": (
+        ("CREATE RULE probe AS ON UPDATE TO cce.tenants DO INSTEAD NOTHING",),
+        "cce.tenants: unexpected rule probe",
+    ),
+    "view": (
+        ("CREATE VIEW cce.probe AS SELECT id FROM cce.tenants",),
+        "cce.probe: unexpected relation",
+    ),
+    "sequence": (("CREATE SEQUENCE cce.probe",), "cce.probe: unexpected relation"),
+    "private-table": (
+        ("CREATE TABLE cce_private.probe (id integer)",),
+        "cce_private.probe: unexpected relation",
+    ),
+    "default-select-for-the-runtime": (
+        ("ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO cce_app",),
+        "unexpected default privilege: cce_migrator grants SELECT on tables to cce_app",
+    ),
+    "default-execute-for-the-runtime": (
+        ("ALTER DEFAULT PRIVILEGES IN SCHEMA cce_private GRANT EXECUTE ON FUNCTIONS TO cce_app",),
+        "unexpected default privilege: cce_migrator grants EXECUTE on functions to cce_app",
+    ),
+    "default-execute-back-to-public": (
+        ("ALTER DEFAULT PRIVILEGES GRANT EXECUTE ON FUNCTIONS TO PUBLIC",),
+        "missing default privilege: functions of cce_migrator are executable by PUBLIC",
+    ),
+}
 
 
-def run_script(
-    settings: MigrationSettings, extra: dict[str, str] | None = None
-) -> subprocess.CompletedProcess[str]:
-    environment = alembic_environment(settings, os.environ)
-    environment.update(extra or {})
-    return subprocess.run(
-        [sys.executable, str(SCRIPT)],
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=ROOT,
-        env=environment,
+@pytest.mark.parametrize(
+    ("statements", "expected"), list(CATALOG_DEFECTS.values()), ids=list(CATALOG_DEFECTS)
+)
+async def test_it_reports_constraint_trigger_rule_relation_and_default_privilege_defects(
+    check_schema: ModuleType,
+    migrator_connection: AsyncConnection,
+    statements: tuple[str, ...],
+    expected: str,
+) -> None:
+    found = await problems_after(check_schema, migrator_connection, *statements)
+
+    assert expected in found
+
+
+def _internal_triggers(table: str, mode: str) -> str:
+    """Muda o modo de todos os triggers internos (de FK) da tabela; os nomes levam OIDs."""
+    return (
+        "DO $$ DECLARE name text; BEGIN "
+        "FOR name IN SELECT tgname FROM pg_trigger "
+        f"WHERE tgrelid = 'cce.{table}'::regclass AND tgisinternal LOOP "
+        f"EXECUTE format('ALTER TABLE cce.{table} {mode} TRIGGER %I', name); "
+        "END LOOP; END $$"
     )
+
+
+SUPERUSER_CATALOG_DEFECTS = {
+    # Desliga os triggers internos da FK: api_keys aceitaria um tenant_id que não existe.
+    "foreign-key-triggers-disabled": (
+        ("ALTER TABLE cce.api_keys DISABLE TRIGGER ALL",),
+        "cce.api_keys: a foreign key trigger is not in the mode the migrations create",
+    ),
+    # REPLICA: o trigger só dispara com session_replication_role = replica, nunca numa escrita
+    # normal (origin). Para a validação da FK é o mesmo que desligado.
+    "foreign-key-triggers-replica-on-the-referencing-table": (
+        (_internal_triggers("api_keys", "ENABLE REPLICA"),),
+        "cce.api_keys: a foreign key trigger is not in the mode the migrations create",
+    ),
+    "foreign-key-triggers-replica-on-the-referenced-table": (
+        (_internal_triggers("tenants", "ENABLE REPLICA"),),
+        "cce.tenants: a foreign key trigger is not in the mode the migrations create",
+    ),
+    # ALWAYS valida, mas dispara também na replicação: não é o modo que as migrations criam.
+    "foreign-key-triggers-always": (
+        (_internal_triggers("api_keys", "ENABLE ALWAYS"),),
+        "cce.api_keys: a foreign key trigger is not in the mode the migrations create",
+    ),
+    # Com SET no parâmetro, o runtime mudaria session_replication_role para replica e as FKs
+    # deixariam de valer na sessão dele.
+    "runtime-may-set-replication-role": (
+        ("GRANT SET ON PARAMETER session_replication_role TO cce_app",),
+        "unexpected parameter privilege: cce_app SET on session_replication_role",
+    ),
+    # Uma publication entrega as linhas a quem assina, sem RLS.
+    "publication-of-a-table": (
+        ("CREATE PUBLICATION probe FOR TABLE cce.api_keys",),
+        "unexpected publication probe",
+    ),
+    "publication-of-the-schema": (
+        ("CREATE PUBLICATION probe FOR TABLES IN SCHEMA cce",),
+        "unexpected publication probe",
+    ),
+    "publication-of-all-tables": (
+        ("CREATE PUBLICATION probe FOR ALL TABLES",),
+        "unexpected publication probe",
+    ),
+    "event-trigger": (
+        (
+            "CREATE FUNCTION public.probe() RETURNS event_trigger LANGUAGE plpgsql "
+            "AS $$ BEGIN END $$",
+            "CREATE EVENT TRIGGER probe ON ddl_command_start EXECUTE FUNCTION public.probe()",
+        ),
+        "unexpected event trigger probe",
+    ),
+    "default-execute-of-auth-back-to-public": (
+        ("ALTER DEFAULT PRIVILEGES FOR ROLE cce_auth GRANT EXECUTE ON FUNCTIONS TO PUBLIC",),
+        "missing default privilege: functions of cce_auth are executable by PUBLIC",
+    ),
+    # Global (sem IN SCHEMA), de um role fora do produto: vale também para o que ele criar em cce.
+    "global-default-of-another-role-for-the-runtime": (
+        ("ALTER DEFAULT PRIVILEGES FOR ROLE postgres GRANT SELECT ON TABLES TO cce_app",),
+        "unexpected default privilege: postgres grants SELECT on tables to cce_app",
+    ),
+    "default-privilege-of-another-role-in-the-schema": (
+        (
+            "ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA cce "
+            "GRANT SELECT ON TABLES TO cce_app",
+        ),
+        "unexpected default privilege: postgres grants SELECT on tables to cce_app",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("statements", "expected"),
+    list(SUPERUSER_CATALOG_DEFECTS.values()),
+    ids=list(SUPERUSER_CATALOG_DEFECTS),
+)
+async def test_it_reports_catalog_defects_only_a_superuser_can_introduce(
+    check_schema: ModuleType,
+    admin_connection: AsyncConnection,
+    statements: tuple[str, ...],
+    expected: str,
+) -> None:
+    found = await problems_after(check_schema, admin_connection, *statements)
+
+    assert expected in found
+
+
+# Um role comum pode mudar os PRÓPRIOS defaults de sessão (ALTER ROLE ... SET), e não há grant que
+# tire isso dele: o runtime poderia desligar os próprios timeouts para as conexões seguintes.
+SETTING_DEFECTS = {
+    "runtime-timeout-off": (
+        "ALTER ROLE cce_app SET statement_timeout = 0",
+        "role cce_app: setting statement_timeout is not the expected one",
+    ),
+    "runtime-timeout-reset": (
+        "ALTER ROLE cce_app RESET lock_timeout",
+        "role cce_app: setting lock_timeout is not the expected one",
+    ),
+    "runtime-search-path": (
+        "ALTER ROLE cce_app SET search_path = public, cce",
+        "role cce_app: setting search_path is not the expected one",
+    ),
+    "runtime-extra-setting": (
+        "ALTER ROLE cce_app SET row_security = off",
+        "role cce_app: unexpected setting row_security",
+    ),
+    "migrator-search-path": (
+        "ALTER ROLE cce_migrator SET search_path = public",
+        "role cce_migrator: setting search_path is not the expected one",
+    ),
+    "runtime-setting-in-this-database": (
+        "DO $$ BEGIN EXECUTE format('ALTER ROLE cce_app IN DATABASE %I SET statement_timeout = 0', "
+        "current_database()); END $$",
+        "role cce_app: unexpected setting statement_timeout in this database",
+    ),
+    "database-setting": (
+        "DO $$ BEGIN EXECUTE format('ALTER DATABASE %I SET search_path = public', "
+        "current_database()); END $$",
+        "database: unexpected setting search_path",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("statement", "expected"), list(SETTING_DEFECTS.values()), ids=list(SETTING_DEFECTS)
+)
+async def test_it_reports_session_defaults_that_differ_from_the_bootstrap(
+    check_schema: ModuleType, admin_connection: AsyncConnection, statement: str, expected: str
+) -> None:
+    found = await problems_after(check_schema, admin_connection, statement)
+
+    assert expected in found
+
+
+async def test_the_runtime_can_change_its_own_session_defaults_so_the_check_must_see_it(
+    check_schema: ModuleType, app_connection: AsyncConnection
+) -> None:
+    """A premissa do teste acima: o próprio `cce_app` consegue gravar a deriva."""
+    found = await problems_after(
+        check_schema, app_connection, "ALTER ROLE cce_app SET statement_timeout = 0"
+    )
+
+    assert "role cce_app: setting statement_timeout is not the expected one" in found
+
+
+def test_the_expected_constraints_are_the_ones_of_the_metadata(check_schema: ModuleType) -> None:
+    """Os nomes fixados no verificador são os do metadata: um não anda sem o outro."""
+    from cce.shared.db.models import Base
+
+    names = {
+        (table, constraint.name)
+        for table in ("tenants", "api_keys")
+        for constraint in Base.metadata.tables[f"cce.{table}"].constraints
+        if constraint.name
+    } | {("alembic_version", "alembic_version_pkc")}
+
+    assert set(check_schema.EXPECTED_CONSTRAINTS) == names
+
+
+# --- a linha de comando ---------------------------------------------------------------------
 
 
 def test_the_command_passes_on_the_migrated_database_and_prints_no_dsn(
     migrator_settings: MigrationSettings,
 ) -> None:
-    result = run_script(migrator_settings)
+    result = run_check_schema(migrator_settings)
     dsn = migrator_settings.migrator_database_url.get_secret_value()
 
     assert_no_leaks(result.stdout + result.stderr, sensitive_components(dsn), "check_schema output")
@@ -594,7 +850,7 @@ def test_the_command_fails_without_the_dsn_when_the_database_is_unreachable(
     url = make_url(migrator_settings.migrator_database_url.get_secret_value()).set(
         host="127.0.0.1", port=1, password=sentinel
     )
-    result = run_script(
+    result = run_check_schema(
         migrator_settings,
         {"CCE_MIGRATOR_DATABASE_URL": url.render_as_string(hide_password=False)},
     )

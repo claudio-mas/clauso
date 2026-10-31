@@ -4,7 +4,13 @@
 atributos de role (plano do M0, seção 9.3). Este script lê só o catálogo, como `cce_migrator`, e
 falha se faltar FORCE RLS, uma policy ou um grant esperado, ou se sobrar qualquer coisa a mais:
 grant extra, policy extra, tabela inesperada, função executável por quem não deveria, `cce_app`
-com ownership, `BYPASSRLS` ou associação a outro role.
+com ownership, `BYPASSRLS` ou associação a outro role. Também confere o que o `alembic check` não
+compara: a definição de cada constraint (CHECK inclusive) e se ela está validada, triggers e rules
+fora do esperado, triggers de FK fora do modo O (desligados, REPLICA ou ALWAYS), replica
+identity diferente da padrão, publications de `cce`, event triggers, GRANT SET em parâmetro
+para um role do produto, relações além das tabelas (views, sequências, qualquer
+coisa em `cce_private`), default privileges que concederiam algo a objetos futuros e os defaults
+de sessão dos roles (o `cce_app` pode reescrever os próprios, timeouts inclusive).
 
 Saída: `schema check passed` (código 0), uma linha por problema (código 1) ou, se o catálogo não
 puder ser lido, uma mensagem fixa em stderr com o nome do tipo do erro (código 2). Nunca imprime
@@ -117,6 +123,75 @@ EXPECTED_RUNTIME_FUNCTIONS: Final[frozenset[str]] = frozenset(
 )
 FUNCTION_OWNERS: Final = (OWNER, "cce_auth")
 
+# Constraints de `cce`, com o texto de pg_get_constraintdef no PostgreSQL 17. O `alembic check`
+# não compara CHECK constraints: uma regra afrouxada sob o mesmo nome só aparece aqui. Os nomes
+# são os do metadata (um teste confere os dois).
+_CURRENCIES = "'BRL'::character varying, 'USD'::character varying, 'EUR'::character varying"
+_STATUSES = (
+    "'active'::character varying, 'suspended'::character varying, 'archived'::character varying"
+)
+EXPECTED_CONSTRAINTS: Final[dict[tuple[str, str], str]] = {
+    ("alembic_version", "alembic_version_pkc"): "PRIMARY KEY (version_num)",
+    ("tenants", "pk_tenants"): "PRIMARY KEY (id)",
+    ("tenants", "uq_tenants_slug"): "UNIQUE (slug)",
+    ("tenants", "ck_tenants_name_not_blank"): r"CHECK (((name)::text ~ '\S'::text))",
+    ("tenants", "ck_tenants_slug_format"): (
+        r"CHECK (((slug)::text ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'::text))"
+    ),
+    ("tenants", "ck_tenants_status_allowed"): (
+        f"CHECK (((status)::text = ANY ((ARRAY[{_STATUSES}])::text[])))"
+    ),
+    ("tenants", "ck_tenants_currency_allowed"): (
+        f"CHECK (((default_currency)::text = ANY ((ARRAY[{_CURRENCIES}])::text[])))"
+    ),
+    ("tenants", "ck_tenants_locale_allowed"): (
+        "CHECK (((locale)::text = ANY ((ARRAY['pt-BR'::character varying, "
+        "'en-US'::character varying])::text[])))"
+    ),
+    ("tenants", "ck_tenants_timezone_known"): (
+        "CHECK ((('2000-01-01 00:00:00+00'::timestamp with time zone AT TIME ZONE timezone) "
+        "IS NOT NULL))"
+    ),
+    ("api_keys", "pk_api_keys"): "PRIMARY KEY (id)",
+    ("api_keys", "fk_api_keys_tenant_id_tenants"): (
+        "FOREIGN KEY (tenant_id) REFERENCES cce.tenants(id) ON DELETE RESTRICT"
+    ),
+    ("api_keys", "ck_api_keys_label_not_blank"): r"CHECK (((label)::text ~ '\S'::text))",
+    ("api_keys", "ck_api_keys_secret_digest_length"): "CHECK ((octet_length(secret_digest) = 32))",
+    ("api_keys", "ck_api_keys_pepper_version_positive"): "CHECK ((pepper_version > 0))",
+    ("api_keys", "ck_api_keys_scopes_allowed"): (
+        "CHECK ((scopes <@ ARRAY['tenant:read'::text, 'tenant:write'::text]))"
+    ),
+    ("api_keys", "ck_api_keys_expires_after_created"): "CHECK ((expires_at > created_at))",
+}
+
+# Default privileges: (role que cria, schema ou None para todos, tipo de objeto) -> o que resta
+# de EXECUTE. As duas linhas do bootstrap tiram o EXECUTE de PUBLIC das funções novas; sobra só
+# o do próprio dono. Qualquer outra entrada, de qualquer role nos schemas do produto, é um grant
+# que nasceria sozinho em todo objeto novo.
+EXPECTED_DEFAULT_PRIVILEGES: Final = frozenset(
+    {(role, None, "f", role, "EXECUTE") for role in (OWNER, "cce_auth")}
+)
+# Defaults de sessão do bootstrap (ALTER ROLE ... SET), por role, válidos em todo database. Um role
+# comum pode reescrever os próprios, então só a verificação vê o runtime desligar seus timeouts.
+EXPECTED_ROLE_SETTINGS: Final[dict[str, dict[str, str]]] = {
+    "cce_app": {
+        "search_path": "pg_catalog, cce",
+        "statement_timeout": "5s",
+        "lock_timeout": "2s",
+        "idle_in_transaction_session_timeout": "10s",
+    },
+    OWNER: {"search_path": "pg_catalog, cce"},
+    "cce_auth": {},
+}
+_DEFAULT_OBJECT_TYPES: Final = {
+    "r": "tables",
+    "S": "sequences",
+    "f": "functions",
+    "T": "types",
+    "n": "schemas",
+}
+
 _ROLE_ATTRIBUTES = """
     select rolname, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls,
            rolinherit, rolcanlogin
@@ -197,6 +272,64 @@ _OWNED_BY_APP = """
       and d.refobjid = (select oid from pg_roles where rolname = 'cce_app')
       and d.deptype = 'o'
       and d.dbid in (0, (select oid from pg_database where datname = current_database()))
+"""
+_CONSTRAINTS = """
+    select c.relname, k.conname, pg_get_constraintdef(k.oid), k.convalidated
+    from pg_constraint k
+    join pg_class c on c.oid = k.conrelid
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'cce'
+"""
+# Triggers internos (os da FK) não têm nome estável: aparecem só se estiverem desligados.
+_TRIGGERS = """
+    select n.nspname, c.relname, t.tgname, t.tgisinternal, t.tgenabled::text
+    from pg_trigger t
+    join pg_class c on c.oid = t.tgrelid
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = any(:schemas)
+"""
+_RULES = "select schemaname, tablename, rulename from pg_rules where schemaname = any(:schemas)"
+_REPLICA_IDENTITY = """
+    select c.relname, c.relreplident::text
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'cce' and c.relkind in ('r', 'p')
+"""
+# FOR TABLE, FOR TABLES IN SCHEMA e FOR ALL TABLES aparecem todos em pg_publication_tables.
+_PUBLICATIONS = """
+    select distinct pubname from pg_publication_tables where schemaname = any(:schemas)
+"""
+_EVENT_TRIGGERS = "select evtname from pg_event_trigger"
+# GRANT SET/ALTER SYSTEM ON PARAMETER a um role do produto (ou a PUBLIC).
+_PARAMETER_PRIVILEGES = """
+    select case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end,
+           a.privilege_type, p.parname
+    from pg_parameter_acl p
+    cross join lateral aclexplode(p.paracl) a
+    where a.grantee = 0 or pg_get_userbyid(a.grantee) = any(:roles)
+"""
+_DEFAULT_PRIVILEGES = """
+    select pg_get_userbyid(d.defaclrole), n.nspname, d.defaclobjtype::text,
+           case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end,
+           a.privilege_type
+    from pg_default_acl d
+    left join pg_namespace n on n.oid = d.defaclnamespace
+    cross join lateral aclexplode(d.defaclacl) a
+    where pg_get_userbyid(d.defaclrole) = any(:roles) or n.nspname = any(:schemas)
+       or pg_get_userbyid(a.grantee) = any(:roles)
+"""
+_DEFAULT_PRIVILEGE_OWNERS = """
+    select pg_get_userbyid(defaclrole) from pg_default_acl
+    where defaclnamespace = 0 and defaclobjtype = 'f'
+"""
+# setrole 0 é o default do database inteiro; setdatabase 0 vale em todos os databases.
+_SETTINGS = """
+    select case when s.setrole = 0 then null else pg_get_userbyid(s.setrole) end,
+           s.setdatabase <> 0, unnest(s.setconfig)
+    from pg_db_role_setting s
+    where s.setdatabase in (0, (select oid from pg_database where datname = current_database()))
+      and (s.setrole = 0 and s.setdatabase <> 0
+           or s.setrole in (select oid from pg_roles where rolname = any(:roles)))
 """
 _DATABASE_OWNER = (
     "select pg_get_userbyid(datdba) from pg_database where datname = current_database()"
@@ -416,8 +549,115 @@ async def _functions(connection: AsyncConnection) -> list[str]:
     return problems
 
 
+async def _constraints(connection: AsyncConnection) -> list[str]:
+    problems: list[str] = []
+    actual = {
+        (table, name): (definition, validated)
+        for table, name, definition, validated in (
+            await connection.execute(text(_CONSTRAINTS))
+        ).all()
+    }
+    for (table, name), expected in sorted(EXPECTED_CONSTRAINTS.items()):
+        if (table, name) not in actual:
+            problems.append(f"cce.{table}: constraint {name} is missing")
+            continue
+        definition, validated = actual[(table, name)]
+        if definition != expected:
+            problems.append(f"cce.{table}: constraint {name} differs from the expected definition")
+        if not validated:
+            problems.append(f"cce.{table}: constraint {name} is not validated")
+    for table, name in sorted(set(actual) - set(EXPECTED_CONSTRAINTS)):
+        problems.append(f"cce.{table}: unexpected constraint {name}")
+    return problems
+
+
+async def _triggers_rules_and_relations(connection: AsyncConnection) -> list[str]:
+    """Nada de trigger, rule ou relação além das tabelas: cada um mudaria o que o DML faz."""
+    problems: list[str] = []
+    params = {"schemas": list(SCHEMAS)}
+    for schema, table, name, internal, enabled in (
+        await connection.execute(text(_TRIGGERS), params)
+    ).all():
+        if not internal:
+            problems.append(f"{schema}.{table}: unexpected trigger {name}")
+        elif enabled != "O":
+            # O é o modo em que as migrations criam a FK: valida as escritas normais (origin).
+            # D não valida nada, R só sob session_replication_role = replica, A também na réplica.
+            problems.append(
+                f"{schema}.{table}: a foreign key trigger is not in the mode the migrations create"
+            )
+    for schema, table, name in (await connection.execute(text(_RULES), params)).all():
+        problems.append(f"{schema}.{table}: unexpected rule {name}")
+    for schema, relation, kind, *_ in (await connection.execute(text(_RELATIONS), params)).all():
+        if schema != "cce" or kind not in ("r", "p"):
+            problems.append(f"{schema}.{relation}: unexpected relation")
+    for table, identity in (await connection.execute(text(_REPLICA_IDENTITY))).all():
+        if identity != "d":
+            problems.append(f"cce.{table}: replica identity is not the default")
+    return problems
+
+
+async def _database_wide(connection: AsyncConnection) -> list[str]:
+    """Objetos do database (ou do cluster) que passariam por cima da RLS e das FKs de `cce`."""
+    problems: list[str] = []
+    params = {"roles": list(PRODUCT_ROLES), "schemas": list(SCHEMAS)}
+    for name in (await connection.execute(text(_PUBLICATIONS), params)).scalars():
+        problems.append(f"unexpected publication {name}")
+    for name in (await connection.execute(text(_EVENT_TRIGGERS))).scalars():
+        problems.append(f"unexpected event trigger {name}")
+    for grantee, privilege, parameter in (
+        await connection.execute(text(_PARAMETER_PRIVILEGES), params)
+    ).all():
+        problems.append(f"unexpected parameter privilege: {grantee} {privilege} on {parameter}")
+    return problems
+
+
+async def _default_privileges(connection: AsyncConnection) -> list[str]:
+    problems: list[str] = []
+    params = {"roles": list(PRODUCT_ROLES), "schemas": list(SCHEMAS)}
+    rows = {
+        tuple(row) for row in (await connection.execute(text(_DEFAULT_PRIVILEGES), params)).all()
+    }
+    for role, _, kind, grantee, privilege in sorted(
+        rows - EXPECTED_DEFAULT_PRIVILEGES, key=lambda item: tuple(map(str, item))
+    ):
+        objects = _DEFAULT_OBJECT_TYPES.get(kind, "objects")
+        problems.append(
+            f"unexpected default privilege: {role} grants {privilege} on {objects} to {grantee}"
+        )
+    # Sem a entrada global, vale o default do PostgreSQL: EXECUTE para PUBLIC em toda função nova.
+    revoked = set((await connection.execute(text(_DEFAULT_PRIVILEGE_OWNERS))).scalars())
+    for role in sorted({role for role, *_ in EXPECTED_DEFAULT_PRIVILEGES} - revoked):
+        problems.append(f"missing default privilege: functions of {role} are executable by PUBLIC")
+    return problems
+
+
+async def _settings(connection: AsyncConnection) -> list[str]:
+    """Os defaults de sessão dos roles e do database. Só nomes saem nas mensagens, nunca valores."""
+    problems: list[str] = []
+    actual: dict[str, dict[str, str]] = {role: {} for role in EXPECTED_ROLE_SETTINGS}
+    params = {"roles": list(EXPECTED_ROLE_SETTINGS)}
+    for role, in_this_database, entry in (await connection.execute(text(_SETTINGS), params)).all():
+        name, _, value = str(entry).partition("=")
+        if role is None:
+            problems.append(f"database: unexpected setting {name}")
+        elif in_this_database:
+            problems.append(f"role {role}: unexpected setting {name} in this database")
+        else:
+            actual[role][name] = value
+    for role, expected in sorted(EXPECTED_ROLE_SETTINGS.items()):
+        for name in sorted(set(expected) | set(actual[role])):
+            if name not in expected:
+                problems.append(f"role {role}: unexpected setting {name}")
+            elif actual[role].get(name) != expected[name]:
+                problems.append(f"role {role}: setting {name} is not the expected one")
+    return problems
+
+
 async def collect_problems(connection: AsyncConnection) -> list[str]:
     """Todos os problemas encontrados no catálogo (lista vazia = esquema conforme)."""
+    # pg_get_constraintdef qualifica nomes conforme o search_path; só na transação de leitura.
+    await connection.execute(text("SELECT set_config('search_path', 'pg_catalog', true)"))
     problems: list[str] = []
     for check in (
         _roles,
@@ -427,6 +667,11 @@ async def collect_problems(connection: AsyncConnection) -> list[str]:
         _grants,
         _schema_privileges,
         _functions,
+        _constraints,
+        _triggers_rules_and_relations,
+        _default_privileges,
+        _settings,
+        _database_wide,
     ):
         problems += await check(connection)
     return sorted(set(problems))

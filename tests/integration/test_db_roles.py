@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from cce.shared.config import MigrationSettings, Settings
@@ -235,6 +235,32 @@ async def test_migrator_has_the_search_path_but_no_runtime_timeouts(
     )
 
     assert row == ("pg_catalog, cce", "0", "0", "0")
+
+
+QUERY_CANCELED = "57014"
+LOCK_NOT_AVAILABLE = "55P03"
+
+
+async def test_the_runtime_statement_timeout_cancels_a_slow_query_and_the_connection_survives(
+    app_connection: AsyncConnection,
+) -> None:
+    assert await outcome(app_connection, "SELECT pg_sleep(6)") == QUERY_CANCELED
+
+    assert await scalar_row(app_connection, "SELECT 1") == (1,)
+
+
+async def test_the_runtime_lock_timeout_gives_up_on_a_held_lock_and_works_once_released(
+    app_connection: AsyncConnection, migrator_engine: AsyncEngine
+) -> None:
+    async with migrator_engine.connect() as holder:
+        await holder.execute(text("LOCK TABLE cce.tenants IN ACCESS EXCLUSIVE MODE"))
+        try:
+            blocked = await outcome(app_connection, "SELECT count(*) FROM cce.tenants")
+        finally:
+            await holder.rollback()
+
+    assert blocked == LOCK_NOT_AVAILABLE
+    assert await scalar_row(app_connection, "SELECT count(*) FROM cce.tenants") == (0,)
 
 
 async def test_functions_are_not_executable_by_public_by_default(
