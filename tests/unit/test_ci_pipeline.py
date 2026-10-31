@@ -191,3 +191,22 @@ def test_there_is_no_release_workflow_nor_image_publication() -> None:
 
     assert names == ["ci.yml"]
     assert not re.search(r"packages:\s*write|docker (push|login)|ghcr\.io", text)
+
+
+ADR = ROOT / "docs" / "adr" / "0017-delivery-environments.md"
+
+
+@pytest.mark.parametrize(
+    "required",
+    [
+        "**Status:** Proposto",
+        "`local`, `test`, `staging` e `production`",  # os quatro ambientes
+        "### Migrations em job separado",
+        "### CI obrigatória antes do merge",
+        "`foundation`",
+        "### Promoção por digest: adiada para o ticket 12",
+        "não existe `release.yml`",
+    ],
+)
+def test_adr_0017_records_the_delivery_decisions(required: str) -> None:
+    assert required in ADR.read_text()
