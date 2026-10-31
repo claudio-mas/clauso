@@ -6,7 +6,9 @@ falha se faltar FORCE RLS, uma policy ou um grant esperado, ou se sobrar qualque
 grant extra, policy extra, tabela inesperada, função executável por quem não deveria, `cce_app`
 com ownership, `BYPASSRLS` ou associação a outro role. Também confere o que o `alembic check` não
 compara: a definição de cada constraint (CHECK inclusive) e se ela está validada, triggers e rules
-fora do esperado, triggers de FK desligados, relações além das tabelas (views, sequências, qualquer
+fora do esperado, triggers de FK fora do modo O (desligados, REPLICA ou ALWAYS), replica
+identity diferente da padrão, publications de `cce`, event triggers, GRANT SET em parâmetro
+para um role do produto, relações além das tabelas (views, sequências, qualquer
 coisa em `cce_private`), default privileges que concederiam algo a objetos futuros e os defaults
 de sessão dos roles (o `cce_app` pode reescrever os próprios, timeouts inclusive).
 
@@ -287,6 +289,25 @@ _TRIGGERS = """
     where n.nspname = any(:schemas)
 """
 _RULES = "select schemaname, tablename, rulename from pg_rules where schemaname = any(:schemas)"
+_REPLICA_IDENTITY = """
+    select c.relname, c.relreplident::text
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'cce' and c.relkind in ('r', 'p')
+"""
+# FOR TABLE, FOR TABLES IN SCHEMA e FOR ALL TABLES aparecem todos em pg_publication_tables.
+_PUBLICATIONS = """
+    select distinct pubname from pg_publication_tables where schemaname = any(:schemas)
+"""
+_EVENT_TRIGGERS = "select evtname from pg_event_trigger"
+# GRANT SET/ALTER SYSTEM ON PARAMETER a um role do produto (ou a PUBLIC).
+_PARAMETER_PRIVILEGES = """
+    select case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end,
+           a.privilege_type, p.parname
+    from pg_parameter_acl p
+    cross join lateral aclexplode(p.paracl) a
+    where a.grantee = 0 or pg_get_userbyid(a.grantee) = any(:roles)
+"""
 _DEFAULT_PRIVILEGES = """
     select pg_get_userbyid(d.defaclrole), n.nspname, d.defaclobjtype::text,
            case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end,
@@ -559,13 +580,35 @@ async def _triggers_rules_and_relations(connection: AsyncConnection) -> list[str
     ).all():
         if not internal:
             problems.append(f"{schema}.{table}: unexpected trigger {name}")
-        elif enabled == "D":
-            problems.append(f"{schema}.{table}: a foreign key trigger is disabled")
+        elif enabled != "O":
+            # O é o modo em que as migrations criam a FK: valida as escritas normais (origin).
+            # D não valida nada, R só sob session_replication_role = replica, A também na réplica.
+            problems.append(
+                f"{schema}.{table}: a foreign key trigger is not in the mode the migrations create"
+            )
     for schema, table, name in (await connection.execute(text(_RULES), params)).all():
         problems.append(f"{schema}.{table}: unexpected rule {name}")
     for schema, relation, kind, *_ in (await connection.execute(text(_RELATIONS), params)).all():
         if schema != "cce" or kind not in ("r", "p"):
             problems.append(f"{schema}.{relation}: unexpected relation")
+    for table, identity in (await connection.execute(text(_REPLICA_IDENTITY))).all():
+        if identity != "d":
+            problems.append(f"cce.{table}: replica identity is not the default")
+    return problems
+
+
+async def _database_wide(connection: AsyncConnection) -> list[str]:
+    """Objetos do database (ou do cluster) que passariam por cima da RLS e das FKs de `cce`."""
+    problems: list[str] = []
+    params = {"roles": list(PRODUCT_ROLES), "schemas": list(SCHEMAS)}
+    for name in (await connection.execute(text(_PUBLICATIONS), params)).scalars():
+        problems.append(f"unexpected publication {name}")
+    for name in (await connection.execute(text(_EVENT_TRIGGERS))).scalars():
+        problems.append(f"unexpected event trigger {name}")
+    for grantee, privilege, parameter in (
+        await connection.execute(text(_PARAMETER_PRIVILEGES), params)
+    ).all():
+        problems.append(f"unexpected parameter privilege: {grantee} {privilege} on {parameter}")
     return problems
 
 
@@ -628,6 +671,7 @@ async def collect_problems(connection: AsyncConnection) -> list[str]:
         _triggers_rules_and_relations,
         _default_privileges,
         _settings,
+        _database_wide,
     ):
         problems += await check(connection)
     return sorted(set(problems))

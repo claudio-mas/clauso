@@ -599,6 +599,16 @@ CATALOG_DEFECTS = {
         ),
         f"cce.api_keys: constraint {TENANT_FK} differs from the expected definition",
     ),
+    # Adiada até o COMMIT: dentro da transação, api_keys aceitaria um tenant_id inexistente.
+    "foreign-key-deferrable": (
+        (f"ALTER TABLE cce.api_keys ALTER CONSTRAINT {TENANT_FK} DEFERRABLE INITIALLY DEFERRED",),
+        f"cce.api_keys: constraint {TENANT_FK} differs from the expected definition",
+    ),
+    # Com REPLICA IDENTITY FULL, a decodificação lógica levaria a linha antiga inteira (o digest).
+    "replica-identity-full": (
+        ("ALTER TABLE cce.api_keys REPLICA IDENTITY FULL",),
+        "cce.api_keys: replica identity is not the default",
+    ),
     "extra-constraint": (
         ("ALTER TABLE cce.tenants ADD CONSTRAINT ck_tenants_probe CHECK (true)",),
         "cce.tenants: unexpected constraint ck_tenants_probe",
@@ -653,11 +663,64 @@ async def test_it_reports_constraint_trigger_rule_relation_and_default_privilege
     assert expected in found
 
 
+def _internal_triggers(table: str, mode: str) -> str:
+    """Muda o modo de todos os triggers internos (de FK) da tabela; os nomes levam OIDs."""
+    return (
+        "DO $$ DECLARE name text; BEGIN "
+        "FOR name IN SELECT tgname FROM pg_trigger "
+        f"WHERE tgrelid = 'cce.{table}'::regclass AND tgisinternal LOOP "
+        f"EXECUTE format('ALTER TABLE cce.{table} {mode} TRIGGER %I', name); "
+        "END LOOP; END $$"
+    )
+
+
 SUPERUSER_CATALOG_DEFECTS = {
     # Desliga os triggers internos da FK: api_keys aceitaria um tenant_id que não existe.
     "foreign-key-triggers-disabled": (
         ("ALTER TABLE cce.api_keys DISABLE TRIGGER ALL",),
-        "cce.api_keys: a foreign key trigger is disabled",
+        "cce.api_keys: a foreign key trigger is not in the mode the migrations create",
+    ),
+    # REPLICA: o trigger só dispara com session_replication_role = replica, nunca numa escrita
+    # normal (origin). Para a validação da FK é o mesmo que desligado.
+    "foreign-key-triggers-replica-on-the-referencing-table": (
+        (_internal_triggers("api_keys", "ENABLE REPLICA"),),
+        "cce.api_keys: a foreign key trigger is not in the mode the migrations create",
+    ),
+    "foreign-key-triggers-replica-on-the-referenced-table": (
+        (_internal_triggers("tenants", "ENABLE REPLICA"),),
+        "cce.tenants: a foreign key trigger is not in the mode the migrations create",
+    ),
+    # ALWAYS valida, mas dispara também na replicação: não é o modo que as migrations criam.
+    "foreign-key-triggers-always": (
+        (_internal_triggers("api_keys", "ENABLE ALWAYS"),),
+        "cce.api_keys: a foreign key trigger is not in the mode the migrations create",
+    ),
+    # Com SET no parâmetro, o runtime mudaria session_replication_role para replica e as FKs
+    # deixariam de valer na sessão dele.
+    "runtime-may-set-replication-role": (
+        ("GRANT SET ON PARAMETER session_replication_role TO cce_app",),
+        "unexpected parameter privilege: cce_app SET on session_replication_role",
+    ),
+    # Uma publication entrega as linhas a quem assina, sem RLS.
+    "publication-of-a-table": (
+        ("CREATE PUBLICATION probe FOR TABLE cce.api_keys",),
+        "unexpected publication probe",
+    ),
+    "publication-of-the-schema": (
+        ("CREATE PUBLICATION probe FOR TABLES IN SCHEMA cce",),
+        "unexpected publication probe",
+    ),
+    "publication-of-all-tables": (
+        ("CREATE PUBLICATION probe FOR ALL TABLES",),
+        "unexpected publication probe",
+    ),
+    "event-trigger": (
+        (
+            "CREATE FUNCTION public.probe() RETURNS event_trigger LANGUAGE plpgsql "
+            "AS $$ BEGIN END $$",
+            "CREATE EVENT TRIGGER probe ON ddl_command_start EXECUTE FUNCTION public.probe()",
+        ),
+        "unexpected event trigger probe",
     ),
     "default-execute-of-auth-back-to-public": (
         ("ALTER DEFAULT PRIVILEGES FOR ROLE cce_auth GRANT EXECUTE ON FUNCTIONS TO PUBLIC",),
