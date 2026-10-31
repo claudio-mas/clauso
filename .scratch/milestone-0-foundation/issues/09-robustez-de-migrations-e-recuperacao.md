@@ -4,7 +4,7 @@
 
 **Blocked by:** 07
 
-**Status:** in-progress
+**Status:** in-review
 
 **Plano:** Tarefa 9 e seção 9.3. O ensaio de backup/restore da seção 18 está no ticket 12.
 
