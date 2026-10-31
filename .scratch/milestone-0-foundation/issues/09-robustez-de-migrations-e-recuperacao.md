@@ -4,7 +4,7 @@
 
 **Blocked by:** 07
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Plano:** Tarefa 9 e seção 9.3. O ensaio de backup/restore da seção 18 está no ticket 12.
 
