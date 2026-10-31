@@ -4,7 +4,7 @@
 
 **Blocked by:** 08, 09
 
-**Status:** in-progress
+**Status:** in-review
 
 **Plano:** Tarefa 10 e seção 15.1. A seção 15.2 (release) e a 15.3 (CD) foram movidas para o ticket 12. **Vocabulário:** nenhum termo novo.
 
