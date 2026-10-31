@@ -202,13 +202,15 @@ ADR = ROOT / "docs" / "adr" / "0017-delivery-environments.md"
 @pytest.mark.parametrize(
     "required",
     [
-        "**Status:** Proposto",
+        "**Status:** Aceito",
         "`local`, `test`, `staging` e `production`",  # os quatro ambientes
         "### Migrations em job separado",
         "### CI obrigatória antes do merge",
         "`foundation`",
         "### Promoção por digest: adiada para o ticket 12",
         "não existe `release.yml`",
+        "PEP 668",  # por que a instalação do uv leva --break-system-packages
+        "--break-system-packages uv==0.12.10",
     ],
 )
 def test_adr_0017_records_the_delivery_decisions(required: str) -> None:
