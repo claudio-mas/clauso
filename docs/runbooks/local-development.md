@@ -137,3 +137,16 @@ uv run --project apps/api --locked ruff format --check --config apps/api/pyproje
 uv run --project apps/api --locked mypy --config-file apps/api/pyproject.toml apps/api/src tests scripts
 uv run --project apps/api --locked pytest tests/unit
 ```
+
+## Verificação completa (a mesma da CI)
+
+```bash
+bash scripts/ci.sh
+```
+
+É o que o job `foundation` roda em toda Pull Request (`.github/workflows/ci.yml`, ADR-0017). O script reproduz o ambiente do zero no projeto Compose descartável `cce-ci`, com o banco `cce_test_ci` e um dotenv de segredos novos num diretório temporário, e para no primeiro controle que falhar: lock, Ruff, mypy, configuração e segredos do Compose (`scripts/check_compose_secrets.py`, que nunca imprime valores), migrations até o head, `tests/migrations`, a suíte de unidade, integração e contrato com cobertura mínima de 85%, `alembic check`, `scripts/check_schema.py`, `pip-audit`, build da imagem, o job `migrate` separado, a API pelo Compose e o smoke com dois Tenants. Código 0 e `ci: all mandatory controls passed` no fim significam tudo verde.
+
+- Exige uv 0.12.10 e as portas 5432, 6379 e 8000 livres: pare os projetos `cce` e `cce-test` antes (`docker compose --env-file .env.test -p cce-test stop`, que não apaga dados).
+- Os testes de Compose leem o projeto de `CCE_TEST_COMPOSE_PROJECT`, que o script define como `cce-ci`; sem ela, vale o `cce-test`. Qualquer outro nome é recusado.
+- Os dados de cobertura vão para o `COVERAGE_FILE` do diretório temporário, nunca para o `.coverage` do repositório.
+- No fim, com sucesso ou falha, o script apaga containers, volumes e o dotenv **só do projeto `cce-ci`**. Se uma execução foi interrompida antes do teardown (por exemplo, com `kill -9`), o script recusa rodar até que o projeto que sobrou seja removido: `docker compose -p cce-ci down --volumes`. Esse comando só vale para o `cce-ci`.
