@@ -80,6 +80,18 @@ def test_downgrade_is_refused_when_the_query_could_redirect_the_connection(query
     assert "query" in output
 
 
+@pytest.mark.parametrize("database", ["cce", "postgres", "test_cce", "ccetest", "cce-test"])
+def test_downgrade_is_refused_in_the_test_environment_outside_a_cce_test_database(
+    database: str,
+) -> None:
+    result = alembic("test", database, "downgrade", "base")
+
+    output = combined(result)
+    assert result.returncode != 0
+    assert "refusing to run" in output
+    assert "must start with cce_test" in output
+
+
 def test_downgrade_is_not_refused_in_the_disposable_environment() -> None:
     """A recusa não pode atrapalhar o uso legítimo: aqui o erro é só de conexão (host inválido)."""
     result = alembic("test", "cce_test", "downgrade", "base")
