@@ -7,7 +7,8 @@ grant extra, policy extra, tabela inesperada, função executável por quem não
 com ownership, `BYPASSRLS` ou associação a outro role. Também confere o que o `alembic check` não
 compara: a definição de cada constraint (CHECK inclusive) e se ela está validada, triggers e rules
 fora do esperado, triggers de FK desligados, relações além das tabelas (views, sequências, qualquer
-coisa em `cce_private`) e default privileges que concederiam algo a objetos futuros.
+coisa em `cce_private`), default privileges que concederiam algo a objetos futuros e os defaults
+de sessão dos roles (o `cce_app` pode reescrever os próprios, timeouts inclusive).
 
 Saída: `schema check passed` (código 0), uma linha por problema (código 1) ou, se o catálogo não
 puder ser lido, uma mensagem fixa em stderr com o nome do tipo do erro (código 2). Nunca imprime
@@ -169,6 +170,18 @@ EXPECTED_CONSTRAINTS: Final[dict[tuple[str, str], str]] = {
 EXPECTED_DEFAULT_PRIVILEGES: Final = frozenset(
     {(role, None, "f", role, "EXECUTE") for role in (OWNER, "cce_auth")}
 )
+# Defaults de sessão do bootstrap (ALTER ROLE ... SET), por role, válidos em todo database. Um role
+# comum pode reescrever os próprios, então só a verificação vê o runtime desligar seus timeouts.
+EXPECTED_ROLE_SETTINGS: Final[dict[str, dict[str, str]]] = {
+    "cce_app": {
+        "search_path": "pg_catalog, cce",
+        "statement_timeout": "5s",
+        "lock_timeout": "2s",
+        "idle_in_transaction_session_timeout": "10s",
+    },
+    OWNER: {"search_path": "pg_catalog, cce"},
+    "cce_auth": {},
+}
 _DEFAULT_OBJECT_TYPES: Final = {
     "r": "tables",
     "S": "sequences",
@@ -286,6 +299,15 @@ _DEFAULT_PRIVILEGES = """
 _DEFAULT_PRIVILEGE_OWNERS = """
     select pg_get_userbyid(defaclrole) from pg_default_acl
     where defaclnamespace = 0 and defaclobjtype = 'f'
+"""
+# setrole 0 é o default do database inteiro; setdatabase 0 vale em todos os databases.
+_SETTINGS = """
+    select case when s.setrole = 0 then null else pg_get_userbyid(s.setrole) end,
+           s.setdatabase <> 0, unnest(s.setconfig)
+    from pg_db_role_setting s
+    where s.setdatabase in (0, (select oid from pg_database where datname = current_database()))
+      and (s.setrole = 0 and s.setdatabase <> 0
+           or s.setrole in (select oid from pg_roles where rolname = any(:roles)))
 """
 _DATABASE_OWNER = (
     "select pg_get_userbyid(datdba) from pg_database where datname = current_database()"
@@ -566,6 +588,28 @@ async def _default_privileges(connection: AsyncConnection) -> list[str]:
     return problems
 
 
+async def _settings(connection: AsyncConnection) -> list[str]:
+    """Os defaults de sessão dos roles e do database. Só nomes saem nas mensagens, nunca valores."""
+    problems: list[str] = []
+    actual: dict[str, dict[str, str]] = {role: {} for role in EXPECTED_ROLE_SETTINGS}
+    params = {"roles": list(EXPECTED_ROLE_SETTINGS)}
+    for role, in_this_database, entry in (await connection.execute(text(_SETTINGS), params)).all():
+        name, _, value = str(entry).partition("=")
+        if role is None:
+            problems.append(f"database: unexpected setting {name}")
+        elif in_this_database:
+            problems.append(f"role {role}: unexpected setting {name} in this database")
+        else:
+            actual[role][name] = value
+    for role, expected in sorted(EXPECTED_ROLE_SETTINGS.items()):
+        for name in sorted(set(expected) | set(actual[role])):
+            if name not in expected:
+                problems.append(f"role {role}: unexpected setting {name}")
+            elif actual[role].get(name) != expected[name]:
+                problems.append(f"role {role}: setting {name} is not the expected one")
+    return problems
+
+
 async def collect_problems(connection: AsyncConnection) -> list[str]:
     """Todos os problemas encontrados no catálogo (lista vazia = esquema conforme)."""
     # pg_get_constraintdef qualifica nomes conforme o search_path; só na transação de leitura.
@@ -582,6 +626,7 @@ async def collect_problems(connection: AsyncConnection) -> list[str]:
         _constraints,
         _triggers_rules_and_relations,
         _default_privileges,
+        _settings,
     ):
         problems += await check(connection)
     return sorted(set(problems))

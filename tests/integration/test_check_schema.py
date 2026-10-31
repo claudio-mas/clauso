@@ -689,6 +689,64 @@ async def test_it_reports_catalog_defects_only_a_superuser_can_introduce(
     assert expected in found
 
 
+# Um role comum pode mudar os PRÓPRIOS defaults de sessão (ALTER ROLE ... SET), e não há grant que
+# tire isso dele: o runtime poderia desligar os próprios timeouts para as conexões seguintes.
+SETTING_DEFECTS = {
+    "runtime-timeout-off": (
+        "ALTER ROLE cce_app SET statement_timeout = 0",
+        "role cce_app: setting statement_timeout is not the expected one",
+    ),
+    "runtime-timeout-reset": (
+        "ALTER ROLE cce_app RESET lock_timeout",
+        "role cce_app: setting lock_timeout is not the expected one",
+    ),
+    "runtime-search-path": (
+        "ALTER ROLE cce_app SET search_path = public, cce",
+        "role cce_app: setting search_path is not the expected one",
+    ),
+    "runtime-extra-setting": (
+        "ALTER ROLE cce_app SET row_security = off",
+        "role cce_app: unexpected setting row_security",
+    ),
+    "migrator-search-path": (
+        "ALTER ROLE cce_migrator SET search_path = public",
+        "role cce_migrator: setting search_path is not the expected one",
+    ),
+    "runtime-setting-in-this-database": (
+        "DO $$ BEGIN EXECUTE format('ALTER ROLE cce_app IN DATABASE %I SET statement_timeout = 0', "
+        "current_database()); END $$",
+        "role cce_app: unexpected setting statement_timeout in this database",
+    ),
+    "database-setting": (
+        "DO $$ BEGIN EXECUTE format('ALTER DATABASE %I SET search_path = public', "
+        "current_database()); END $$",
+        "database: unexpected setting search_path",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("statement", "expected"), list(SETTING_DEFECTS.values()), ids=list(SETTING_DEFECTS)
+)
+async def test_it_reports_session_defaults_that_differ_from_the_bootstrap(
+    check_schema: ModuleType, admin_connection: AsyncConnection, statement: str, expected: str
+) -> None:
+    found = await problems_after(check_schema, admin_connection, statement)
+
+    assert expected in found
+
+
+async def test_the_runtime_can_change_its_own_session_defaults_so_the_check_must_see_it(
+    check_schema: ModuleType, app_connection: AsyncConnection
+) -> None:
+    """A premissa do teste acima: o próprio `cce_app` consegue gravar a deriva."""
+    found = await problems_after(
+        check_schema, app_connection, "ALTER ROLE cce_app SET statement_timeout = 0"
+    )
+
+    assert "role cce_app: setting statement_timeout is not the expected one" in found
+
+
 def test_the_expected_constraints_are_the_ones_of_the_metadata(check_schema: ModuleType) -> None:
     """Os nomes fixados no verificador são os do metadata: um não anda sem o outro."""
     from cce.shared.db.models import Base
