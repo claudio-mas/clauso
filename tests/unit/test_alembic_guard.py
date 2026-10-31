@@ -84,12 +84,13 @@ def test_downgrade_is_refused_when_the_query_could_redirect_the_connection(query
 def test_downgrade_is_refused_in_the_test_environment_outside_a_cce_test_database(
     database: str,
 ) -> None:
+    """Recusado ainda antes da guarda do `env.py`: a configuração de teste nem carrega."""
     result = alembic("test", database, "downgrade", "base")
 
     output = combined(result)
     assert result.returncode != 0
-    assert "refusing to run" in output
-    assert "must start with cce_test" in output
+    assert "must name a database starting with cce_test" in output
+    assert "Running downgrade" not in output
 
 
 def test_downgrade_is_not_refused_in_the_disposable_environment() -> None:
