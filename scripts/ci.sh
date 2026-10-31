@@ -21,11 +21,6 @@ readonly BASE_URL="http://127.0.0.1:8000"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly ROOT
-cd "$ROOT"
-
-work_dir="$(mktemp -d "${TMPDIR:-/tmp}/cce-ci.XXXXXX")"
-readonly work_dir
-readonly env_file="$work_dir/.env.ci"
 
 step() {
     printf '\n==> %s\n' "$1"
@@ -46,16 +41,32 @@ uv_run() {
     uv run --project apps/api --locked "$@"
 }
 
+# Sai com o status do pipeline; um teardown que falha nunca deixa a execução verde.
 teardown() {
     local status=$?
     trap - EXIT
-    if [[ -f "$env_file" ]]; then
-        compose down --volumes --remove-orphans --timeout 10 >/dev/null 2>&1 \
-            || printf 'ci: the teardown of the %s project failed\n' "$PROJECT" >&2
+    if [[ -f "$env_file" ]] \
+        && ! compose down --volumes --remove-orphans --timeout 10 >/dev/null 2>&1; then
+        printf 'ci: the teardown of the %s project failed; remove it before the next run\n' \
+            "$PROJECT" >&2
+        if ((status == 0)); then
+            status=1
+        fi
     fi
     rm -rf "$work_dir"
     exit "$status"
 }
+
+# Carregado com `source` (os testes de tests/unit/test_ci_pipeline.py), o script só define as
+# funções acima; nada abaixo roda.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
+
+cd "$ROOT"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/cce-ci.XXXXXX")"
+readonly work_dir
+readonly env_file="$work_dir/.env.ci"
 trap teardown EXIT
 
 # Um projeto `cce-ci` que sobrou de uma execução interrompida tem volumes com senhas antigas.

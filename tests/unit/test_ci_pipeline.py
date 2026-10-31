@@ -121,7 +121,7 @@ def test_the_teardown_is_installed_before_anything_starts_and_only_removes_cce_c
     removals = [line for line in lines if re.search(r"\bdown\b|volume rm|\brm -[a-z]*v", line)]
 
     assert trap < first_compose
-    assert len(removals) == 1 and re.match(r"\s*compose down --volumes", removals[0])
+    assert len(removals) == 1 and re.search(r"\bcompose down --volumes", removals[0])
 
 
 def test_coverage_data_is_isolated_from_the_repository() -> None:
@@ -210,3 +210,53 @@ ADR = ROOT / "docs" / "adr" / "0017-delivery-environments.md"
 )
 def test_adr_0017_records_the_delivery_decisions(required: str) -> None:
     assert required in ADR.read_text()
+
+
+def run_teardown(tmp_path: Path, docker_exit: int, pipeline_exit: int) -> tuple[int, str, str]:
+    """Carrega as funções do `ci.sh` (sem rodar o pipeline) e sai por `teardown` com um status.
+
+    O `docker` do PATH é um falso que registra os argumentos e devolve `docker_exit`.
+    """
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "docker-calls"
+    docker = fake_bin / "docker"
+    docker.write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\nexit {docker_exit}\n')
+    docker.chmod(0o755)
+    work_dir = tmp_path / "work"
+    harness = (
+        f'source "{CI_SCRIPT}"\n'
+        f'work_dir="{work_dir}"\n'
+        'env_file="$work_dir/.env.ci"\n'
+        'mkdir -p "$work_dir" && touch "$env_file"\n'
+        "trap teardown EXIT\n"
+        f"exit {pipeline_exit}\n"
+    )
+    result = subprocess.run(
+        ["bash", "-c", harness],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"PATH": f"{fake_bin}:/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+    assert not work_dir.exists(), "the teardown did not remove the work directory"
+    return result.returncode, result.stderr, calls.read_text() if calls.exists() else ""
+
+
+@pytest.mark.parametrize(
+    ("docker_exit", "pipeline_exit", "expected"),
+    [
+        (0, 0, 0),  # tudo verde
+        (1, 0, 1),  # o pipeline passou, mas o teardown falhou: a execução não pode ficar verde
+        (0, 3, 3),  # o pipeline falhou e o teardown funcionou: o status original fica
+        (1, 3, 3),  # os dois falharam: o status do pipeline prevalece
+    ],
+)
+def test_the_teardown_never_turns_a_failure_into_success(
+    tmp_path: Path, docker_exit: int, pipeline_exit: int, expected: int
+) -> None:
+    code, stderr, calls = run_teardown(tmp_path, docker_exit, pipeline_exit)
+
+    assert code == expected
+    assert re.search(r"--env-file \S+/\.env\.ci -p cce-ci .* down --volumes", calls)
+    assert ("teardown of the cce-ci project failed" in stderr) == (docker_exit != 0)
