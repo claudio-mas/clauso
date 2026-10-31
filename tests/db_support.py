@@ -19,9 +19,10 @@ from uuid import UUID
 
 import pytest
 from integration.support import assert_no_leaks, require, run_compose
+from sqlalchemy import text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from cce.shared.config import MigrationSettings
 from cce.shared.db.disposable import UnsafeDatabaseError
@@ -103,6 +104,47 @@ def run_alembic(
             "withheld, so re-run the command by hand to read it",
         )
     return result
+
+
+CHECK_SCHEMA = ROOT / "scripts" / "check_schema.py"
+
+
+def run_check_schema(
+    settings: MigrationSettings, extra: Mapping[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Roda `scripts/check_schema.py` como subprocesso, com os settings validados no ambiente.
+
+    Quem chama confere vazamentos na saída (com `sensitive_components`) antes de inspecioná-la.
+    """
+    environment = alembic_environment(settings, os.environ)
+    environment.update(extra or {})
+    return subprocess.run(
+        [sys.executable, str(CHECK_SCHEMA)],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=ROOT,
+        env=environment,
+    )
+
+
+# Tudo o que as migrations criam. Remover isto como superusuário leva o banco descartável de volta
+# ao estado do bootstrap, de onde `upgrade head` reconstrói o schema e seus controles.
+_SCHEMA_TEARDOWN = (
+    "DROP FUNCTION IF EXISTS cce_private.lookup_api_key(uuid)",
+    "DROP TABLE IF EXISTS cce.api_keys, cce.tenants, cce.alembic_version",
+)
+
+
+async def rebuild_schema(admin_engine: AsyncEngine, settings: MigrationSettings) -> None:
+    """Reconstrói o schema do zero pelas migrations (só no banco descartável validado)."""
+    assert_disposable_database(
+        settings.env, settings.migrator_database_url.get_secret_value(), "migrator"
+    )
+    async with admin_engine.begin() as connection:
+        for statement in _SCHEMA_TEARDOWN:
+            await connection.execute(text(statement))
+    run_alembic(settings, "upgrade", "head")
 
 
 _LOOPBACK = ("127.0.0.1", "localhost", "::1")
