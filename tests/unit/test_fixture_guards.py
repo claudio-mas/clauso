@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
+from child_pytest import pytest_command, pytest_environment
 from db_support import ROOT
 
 PASSWORD = "fixture-guard-password-SENTINEL"
@@ -44,12 +44,12 @@ def run_target(target: str, dotenv: Path) -> str:
     environment = {k: v for k, v in os.environ.items() if not k.upper().startswith("CCE_")}
     environment["CCE_ENV_FILE"] = str(dotenv)
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", target, "-q", "-p", "no:cacheprovider", "-vv"],
+        pytest_command(target, "-q", "-vv"),
         capture_output=True,
         text=True,
         check=False,
         cwd=ROOT,
-        env=environment,
+        env=pytest_environment(environment, dotenv.parent),
     )
     output = result.stdout + result.stderr
     if result.returncode == 0:

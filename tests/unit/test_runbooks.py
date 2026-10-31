@@ -62,3 +62,32 @@ def test_the_migrations_runbook_never_suggests_bypassing_rls() -> None:
     assert all(re.search(r"\b(?:nunca|não|sem|nenhum)\b", line, re.IGNORECASE) for line in lines), (
         lines
     )
+
+
+BRANCH_PROTECTION = ROOT / "docs" / "runbooks" / "branch-protection.md"
+LOCAL_DEVELOPMENT = ROOT / "docs" / "runbooks" / "local-development.md"
+
+
+@pytest.mark.parametrize(
+    "required",
+    [
+        "Require a pull request before merging",  # merge só por PR
+        "Bypass list",  # ninguém contorna, nem administradores
+        "`foundation`",  # o job obrigatório
+        "Require branches to be up to date before merging",
+        "Block force pushes",
+        "Restrict deletions",
+        "Allow merge commits",
+        "ADR-0017",
+    ],
+)
+def test_the_branch_protection_runbook_covers(required: str) -> None:
+    assert required in BRANCH_PROTECTION.read_text()
+
+
+@pytest.mark.parametrize(
+    "required",
+    ["bash scripts/ci.sh", "cce-ci", "cce_test_ci", "CCE_TEST_COMPOSE_PROJECT", "COVERAGE_FILE"],
+)
+def test_the_local_development_runbook_explains_the_full_verification(required: str) -> None:
+    assert required in LOCAL_DEVELOPMENT.read_text()

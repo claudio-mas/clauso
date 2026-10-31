@@ -1,0 +1,35 @@
+# CI obrigatória antes do merge (ADR-0017): o job `foundation` roda scripts/ci.sh, que reproduz o
+# ambiente do zero no projeto Compose descartável `cce-ci` e falha no primeiro controle que falhar.
+# A branch protection da `main` exige este job (docs/runbooks/branch-protection.md).
+#
+# Sem segredos, sem publicação de imagem e só leitura do repositório. Actions fixadas por SHA
+# completo, com a versão no comentário; atualizar só por alteração revisada, nunca por tag móvel.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  foundation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned uv
+        # ADR-0011: uv fixado, instalado pelo pip do usuário. O Python do Ubuntu 24.04 é
+        # "externally managed" (PEP 668); --user não toca nos pacotes do sistema.
+        run: |
+          python3 -m pip install --user --break-system-packages uv==0.12.10
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Foundation
+        run: bash scripts/ci.sh

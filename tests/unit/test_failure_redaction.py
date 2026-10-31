@@ -11,13 +11,13 @@ import os
 import re
 import secrets
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
 from urllib.parse import quote
 
 import pytest
 import redaction_plugin
+from child_pytest import pytest_command, pytest_environment
 from db_support import ROOT
 
 pytestmark = pytest.mark.sensitive
@@ -124,10 +124,7 @@ def run_synthetic(tmp_path: Path, secrets_by_label: dict[str, str]) -> str:
         "SENTINEL_FROM_DOTENV": secrets_by_label["dotenv"],
     }
     result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
+        pytest_command(
             str(module),
             "-p",
             "redaction_plugin",
@@ -135,16 +132,14 @@ def run_synthetic(tmp_path: Path, secrets_by_label: dict[str, str]) -> str:
             "-rA",
             "--tb=long",
             "--showlocals",
-            "-p",
-            "no:cacheprovider",
             "--rootdir",
             str(tmp_path),
-        ],
+        ),
         capture_output=True,
         text=True,
         check=False,
         cwd=tmp_path,
-        env=environment,
+        env=pytest_environment(environment, tmp_path),
     )
     return result.stdout + result.stderr
 

@@ -14,11 +14,11 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
 
 import pytest
+from child_pytest import pytest_command, pytest_environment
 from db_support import ROOT
 from integration.support import require
 
@@ -161,24 +161,19 @@ def run_auth_tests(
         if name in os.environ:
             environment[name] = os.environ[name]
     result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
+        pytest_command(
             *TARGETS,
             "-p",
             "authdefects",
-            "-p",
-            "no:cacheprovider",
             "-vv",
             "--tb=long",
             "--showlocals",
-        ],
+        ),
         capture_output=True,
         text=True,
         check=False,
         cwd=ROOT,
-        env=environment,
+        env=pytest_environment(environment, tmp_path),
     )
     values = record.read_text().splitlines() if record.exists() else []
     return result, [v for v in values if len(v) >= 8 and len(set(v)) >= 12]

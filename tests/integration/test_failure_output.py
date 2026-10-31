@@ -10,11 +10,11 @@ import hashlib
 import os
 import secrets
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
+from child_pytest import pytest_command, pytest_environment
 
 from . import support
 
@@ -123,20 +123,15 @@ def test_compose_config_tests_do_not_print_secrets_when_they_fail(tmp_path: Path
     }
 
     result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
+        pytest_command(
             "tests/integration/test_compose_config.py",
             "-vv",  # sem truncar a introspecção: é o pior caso para vazamento
-            "-p",
-            "no:cacheprovider",
-        ],
+        ),
         capture_output=True,
         text=True,
         check=False,
         cwd=support.ROOT,
-        env={**os.environ, "CCE_TEST_COMPOSE_FILE": str(leaking)},
+        env=pytest_environment({**os.environ, "CCE_TEST_COMPOSE_FILE": str(leaking)}, tmp_path),
     )
     output = result.stdout + result.stderr
 

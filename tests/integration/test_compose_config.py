@@ -14,9 +14,9 @@ import pytest
 from pydantic import SecretStr
 
 from .support import (
-    COMPOSE_PROJECT,
     assert_no_leaks,
     compose_env_file,
+    compose_project,
     read_dotenv,
     require,
     run_compose,
@@ -60,13 +60,16 @@ def test_test_environment_uses_a_separate_project_and_database(
     rendered: dict[str, Any],
 ) -> None:
     postgres_env = rendered["services"]["postgres"]["environment"]
+    project = compose_project()
+    database = read_dotenv(compose_env_file()).get("CCE_POSTGRES_DB", "")
 
-    require(rendered["name"] == COMPOSE_PROJECT, "the Compose project is not cce-test")
-    require(postgres_env["POSTGRES_DB"] == "cce_test", "the database is not cce_test")
+    require(rendered["name"] == project, "the Compose project is not the disposable test project")
+    require(database.startswith("cce_test"), "the dotenv database is not a cce_test* database")
+    require(postgres_env["POSTGRES_DB"] == database, "the database is not the dotenv one")
     require(set(rendered["services"]) == SERVICES, "unexpected set of services")
     require(
-        all(v["name"].startswith(f"{COMPOSE_PROJECT}_") for v in rendered["volumes"].values()),
-        "volumes are not scoped to the cce-test project",
+        all(v["name"].startswith(f"{project}_") for v in rendered["volumes"].values()),
+        "volumes are not scoped to the disposable test project",
     )
 
 

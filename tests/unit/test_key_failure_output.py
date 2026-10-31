@@ -11,11 +11,11 @@ from __future__ import annotations
 import os
 import secrets
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
 
 import pytest
+from child_pytest import pytest_command, pytest_environment
 from db_support import ROOT
 from integration.support import require
 
@@ -199,24 +199,19 @@ def run_key_tests(
         "KEY_GENERIC_DEFECT": generic,
     }
     result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
+        pytest_command(
             target,
             "-p",
             "keydefects",
-            "-p",
-            "no:cacheprovider",
             "-vv",
             "--tb=long",
             "--showlocals",
-        ],
+        ),
         capture_output=True,
         text=True,
         check=False,
         cwd=ROOT,
-        env=environment,
+        env=pytest_environment(environment, tmp_path),
     )
     values = record.read_text().splitlines() if record.exists() else []
     # Valores forçados pelos testes (como "_" * 43) são constantes públicas, não segredos gerados.
@@ -351,24 +346,19 @@ def run_synthetic(tmp_path: Path, name: str, token: str, digest: str) -> str:
         "SYNTHETIC_MODE": name,
     }
     result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
+        pytest_command(
             f"{module}::{name}",
             "-vv",
             "--tb=long",
             "--showlocals",
-            "-p",
-            "no:cacheprovider",
             "--rootdir",
             str(tmp_path),
-        ],
+        ),
         capture_output=True,
         text=True,
         check=False,
         cwd=tmp_path,
-        env=environment,
+        env=pytest_environment(environment, tmp_path),
     )
     if result.returncode == 0:
         pytest.fail("the synthetic defect was not detected", pytrace=False)
@@ -512,24 +502,19 @@ def test_the_regression_does_not_print_the_recorded_values_when_it_fails(
         "KEY_RECORD_DIR": str(records),
     }
     result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
+        pytest_command(
             "tests/unit/test_key_failure_output.py",
             "-k",
             expression,
             "-vv",
             "--tb=long",
             "--showlocals",
-            "-p",
-            "no:cacheprovider",
-        ],
+        ),
         capture_output=True,
         text=True,
         check=False,
         cwd=ROOT,
-        env=environment,
+        env=pytest_environment(environment, tmp_path),
     )
     output = result.stdout + result.stderr
     recorded_file = records / "recorded.txt"

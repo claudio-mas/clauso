@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
 from urllib.parse import quote
 
 import pytest
+from child_pytest import pytest_command, pytest_environment
 from db_support import ROOT
 
 PASSWORD = "p@ss/w%rd-ISOLATED-SENTINEL"
@@ -94,24 +94,19 @@ def test_failures_print_neither_isolated_secrets_nor_the_raw_output(tmp_path: Pa
     }
 
     result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
+        pytest_command(
             str(inner),
             "-vv",
             "--tb=long",
             "--showlocals",
-            "-p",
-            "no:cacheprovider",
             "--rootdir",
             str(tmp_path),
-        ],
+        ),
         capture_output=True,
         text=True,
         check=False,
         cwd=tmp_path,
-        env=environment,
+        env=pytest_environment(environment, tmp_path),
     )
     output = result.stdout + result.stderr
 
